@@ -1096,21 +1096,39 @@ if smiles_input:
         if not fragments:
             st.warning("No fragments found. The molecule may be too simple to decompose.")
         else:
-            st.subheader(f"Fragments ({len(fragments)} total)")
-            st.markdown("**Select the fragment that you wish to replace-**")
-            
-            # Create fragment data
+            # Create fragment data first to get counts
             all_frags = decomposition['rings'] + decomposition['non_rings']
+            
+            # Create list of displayable fragment indices (only those with >= 3 heavy atoms)
+            def count_heavy_atoms(smiles):
+                """Count non-hydrogen, non-dummy atoms in a SMILES."""
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    return 0
+                return sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1)  # > 1 excludes H and dummy (0)
+            
+            displayable_frag_indices = [
+                idx for idx, frag in enumerate(all_frags) 
+                if count_heavy_atoms(frag['wildcard_smiles']) >= 3
+            ]
+            
+            st.subheader(f"Fragments ({len(displayable_frag_indices)} displayed, {len(all_frags)} total)")
+            st.markdown("**Select the fragment that you wish to replace-**")
             
             # Ensure selected index is valid
             if st.session_state.selected_idx >= len(all_frags):
                 st.session_state.selected_idx = 0
             
-            # Display fragments in grid with clickable buttons
+            # If selected fragment is not displayable, select the first displayable one
+            if st.session_state.selected_idx not in displayable_frag_indices and displayable_frag_indices:
+                st.session_state.selected_idx = displayable_frag_indices[0]
+            
+            # Display fragments in grid with clickable buttons (only displayable ones)
             cols_per_row = 6
-            for row_start in range(0, len(all_frags), cols_per_row):
+            for row_start in range(0, len(displayable_frag_indices), cols_per_row):
                 cols = st.columns(cols_per_row)
-                for col_idx, frag_idx in enumerate(range(row_start, min(row_start + cols_per_row, len(all_frags)))):
+                for col_idx, display_idx in enumerate(range(row_start, min(row_start + cols_per_row, len(displayable_frag_indices)))):
+                    frag_idx = displayable_frag_indices[display_idx]
                     frag = all_frags[frag_idx]
                     with cols[col_idx]:
                         # Check if this fragment is selected
