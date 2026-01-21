@@ -20,3 +20,4 @@ synplan_data/chembl/molecules_for_filtering_policy_training.smi
 data/filtered_chembl_activities.csv
 data/building_blocks_em_sa_ln_with_ids.sdf
 data/whole_filtered_chembl_with_smiles.csv
+data/fragments_cleaned_whole_filtered_chembl_with_smiles.txt

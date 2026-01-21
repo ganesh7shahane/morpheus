@@ -16,6 +16,7 @@ from itertools import permutations
 from streamlit_ketcher import st_ketcher
 import io
 import base64
+import gzip
 import pandas as pd
 import mols2grid
 import py3Dmol
@@ -696,7 +697,13 @@ def find_similar_fragments(query_smiles: str,
     similar_fragments = []
     seen_canonical_smiles = set()
     
-    with open(fragments_file, 'r') as f:
+    # Support both .gz and plain text files
+    if fragments_file.endswith('.gz'):
+        f = gzip.open(fragments_file, 'rt', encoding='utf-8')
+    else:
+        f = open(fragments_file, 'r')
+    
+    try:
         for line in f:
             line = line.strip()
             if not line:
@@ -763,6 +770,8 @@ def find_similar_fragments(query_smiles: str,
                     seen_canonical_smiles.add(canonical_smi)
             except:
                 continue
+    finally:
+        f.close()
     
     RDLogger.EnableLog('rdApp.*')
     similar_fragments.sort(key=lambda x: x[1], reverse=True)
@@ -1142,9 +1151,9 @@ if smiles_input:
                 with st.spinner("Searching for similar fragments..."):
                     similar = find_similar_fragments(
                         selected_frag['wildcard_smiles'],
-                        "data/kinase_inhibitors_fragments.txt",
+                        "data/fragments_cleaned_whole_filtered_chembl_with_smiles.txt.gz",
                         similarity_threshold=0.2,
-                        top_n=50
+                        top_n=100
                     )
                     st.session_state.similar_fragments = similar
                     st.session_state.last_selected_for_replace = selected
@@ -1164,7 +1173,7 @@ if smiles_input:
                     st.warning("No similar fragments found with matching attachment points and distances.")
                 else:
                     # Similar fragments in collapsed expander
-                    with st.expander(f"🔍 Similar Replacement Fragments ({len(similar_frags)} found)", expanded=False):
+                    with st.expander(f"🔍 Similar replacement fragments found: {len(similar_frags)}", expanded=False):
                         # Display similar fragments in a grid
                         cols_per_row = 6
                         for row_start in range(0, len(similar_frags), cols_per_row):
