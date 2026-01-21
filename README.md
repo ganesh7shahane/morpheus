@@ -9,12 +9,10 @@ Morpheus is an interactive web application for molecular decomposition, fragment
 ### 🧩 Molecule Decomposition
 - Input molecules via SMILES string or draw using the built-in Ketcher editor
 - Automatically decomposes molecules into ring and non-ring fragments
-- Visualizes fragments with 2D structures
+- Visualize all fragments and select one for replacement
 
 ### 🔄 Bioisostere Replacement
-- Select any fragment for replacement
-- Search for similar fragments from a curated database of ChEMBL-derived fragments
-- Filter replacements by Tanimoto similarity threshold
+- Once selected, search for similar fragments from a curated database of ChEMBL-derived fragments
 - Generate new molecules by substituting the selected fragment
 
 ### 📊 Property Filtering
@@ -27,27 +25,25 @@ Morpheus is an interactive web application for molecular decomposition, fragment
   - QED Drug-likeness Score
   - Tanimoto Similarity to parent molecule
 
-### ⚠️ Structural Alerts
-- Automatically flags undesirable substructures (PAINS, reactive groups, etc.)
-- Highlights potential liabilities in generated molecules
+### 🔬 3D Structure Visualization
+- View molecules in 3D with py3Dmol
+- Align generated molecules to input (reference) ligands
 
 ### 🧪 Retrosynthetic Planning
 - Analyze synthetic routes for selected molecules using SynPlanner
 - Visualizes retrosynthetic trees with building block identification
 - Labels commercial building blocks with their IDs
 
-### 🔬 3D Structure Visualization
-- View molecules in 3D with py3Dmol
-- Load and visualize PDB structures with ligands
-- Align generated molecules to reference ligands
+### ⚠️ Structural Alerts
+- The tool will discard generated molecules that have any of the pre-defined structural alerts. These are listed at the end (bottom) of the app
 
 ## Installation
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.9+ (Preferably 3.12.11)
 - Conda (recommended) or pip
 
-### Setup
+### Quick Setup with environment.yaml (Recommended)
 
 1. **Clone the repository:**
    ```bash
@@ -55,9 +51,28 @@ Morpheus is an interactive web application for molecular decomposition, fragment
    cd morpheus
    ```
 
-2. **Create a conda environment (recommended):**
+2. **Create the conda environment:**
    ```bash
-   conda create -n morpheus python=3.11
+   conda env create -f environment.yaml
+   conda activate morpheus
+   ```
+
+3. **Run the app:**
+   ```bash
+   streamlit run morpheus.py
+   ```
+
+### Manual Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/yourusername/morpheus.git
+   cd morpheus
+   ```
+
+2. **Create a conda environment:**
+   ```bash
+   conda create -n morpheus python=3.12
    conda activate morpheus
    ```
 
@@ -73,7 +88,7 @@ Morpheus is an interactive web application for molecular decomposition, fragment
 
 5. **Install SynPlanner (optional, for retrosynthetic planning):**
    ```bash
-   pip install synplan CGRtools
+   pip install synplanner CGRtools
    ```
 
 6. **Decompress data files:**

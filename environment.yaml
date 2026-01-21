@@ -1,0 +1,17 @@
+name: morpheus
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - rdkit
+  - pandas
+  - pip
+  - pip:
+    - streamlit
+    - streamlit-ketcher
+    - mols2grid
+    - py3Dmol
+    # Optional: for retrosynthetic planning
+    - SynPlanner
+    - CGRTools
