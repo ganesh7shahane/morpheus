@@ -35,6 +35,7 @@ st.set_page_config(
 UNDESIRABLE_PATTERNS = [
     # Radioactive isotopes
     ('[18F]', 'Fluorine-18 (radioactive)'),
+    ('[11C]', 'Carbon-11 (radioactive)'),
     ('[123I]', 'Iodine-123 (radioactive)'),
     # Peroxides and related
     ('[O]-[O]', 'Peroxide'),
@@ -86,8 +87,8 @@ UNDESIRABLE_PATTERNS = [
     ('[cH]O', 'Phenol'),
     # Michael acceptors (alpha,beta-unsaturated carbonyl)
     ('[#6]=[#6]-C(=O)', 'Michael acceptor'),
-    ('C=CC(=O)', 'Michael acceptor (enone)'),
-    ('C=CC(=O)[O,N]', 'Michael acceptor (acrylate/acrylamide)'),
+    # ('C=CC(=O)', 'Michael acceptor (enone)'),
+    # ('C=CC(=O)[O,N]', 'Michael acceptor (acrylate/acrylamide)'),
     # Quinone-like (redox active)
     ('c1cc(=O)cc(=O)c1', 'Quinone (redox active)'),
     ('C1=CC(=O)C=CC1=O', 'Benzoquinone'),
@@ -671,6 +672,18 @@ def find_similar_fragments(query_smiles: str,
                     atom.SetAtomMapNum(mapping[old_map])
         return Chem.MolToSmiles(rw.GetMol(), canonical=True)
     
+    def replace_dummies_with_h(mol: Chem.Mol) -> Chem.Mol:
+        """
+        Replace dummy atoms with hydrogen atoms instead of removing them.
+        This preserves valences and allows proper sanitization of aromatic systems.
+        """
+        rw = Chem.RWMol(mol)
+        for atom in rw.GetAtoms():
+            if atom.GetAtomicNum() == 0:  # Dummy atom
+                atom.SetAtomicNum(1)  # Replace with hydrogen
+                atom.SetAtomMapNum(0)
+        return rw.GetMol()
+    
     # Parse query molecule
     query_mol = Chem.MolFromSmiles(query_smiles)
     if query_mol is None:
@@ -681,17 +694,14 @@ def find_similar_fragments(query_smiles: str,
     query_sorted_distances = get_sorted_distances(query_mol) if query_attachments > 1 else ()
     query_distance_matrix = get_distance_matrix(query_mol, query_attachment_info) if query_attachments >= 3 else {}
     
-    # Generate fingerprint for query (remove wildcards for fingerprint)
-    query_mol_no_dummy = Chem.RWMol(query_mol)
-    atoms_to_remove = [a.GetIdx() for a in query_mol_no_dummy.GetAtoms() if a.GetAtomicNum() == 0]
-    for idx in sorted(atoms_to_remove, reverse=True):
-        query_mol_no_dummy.RemoveAtom(idx)
+    # Generate fingerprint for query (replace wildcards with H for fingerprint)
+    # Note: We replace with H instead of removing to preserve valences in aromatic systems
+    query_mol_with_h = replace_dummies_with_h(query_mol)
     
     try:
-        query_mol_clean = query_mol_no_dummy.GetMol()
-        Chem.SanitizeMol(query_mol_clean)
+        Chem.SanitizeMol(query_mol_with_h)
         fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
-        query_fp = fpgen.GetFingerprint(query_mol_clean)
+        query_fp = fpgen.GetFingerprint(query_mol_with_h)
     except:
         return []
     
@@ -741,26 +751,23 @@ def find_similar_fragments(query_smiles: str,
                 if frag_sorted_distances != query_sorted_distances:
                     continue
             
-            frag_mol_no_dummy = Chem.RWMol(frag_mol)
-            atoms_to_remove = [a.GetIdx() for a in frag_mol_no_dummy.GetAtoms() if a.GetAtomicNum() == 0]
-            for idx in sorted(atoms_to_remove, reverse=True):
-                frag_mol_no_dummy.RemoveAtom(idx)
+            # Replace dummy atoms with H for fingerprint calculation and duplicate detection
+            frag_mol_with_h = replace_dummies_with_h(frag_mol)
             
             try:
-                frag_mol_clean = frag_mol_no_dummy.GetMol()
                 try:
-                    Chem.SanitizeMol(frag_mol_clean)
+                    Chem.SanitizeMol(frag_mol_with_h)
                 except:
                     try:
-                        Chem.SanitizeMol(frag_mol_clean, catchErrors=True)
+                        Chem.SanitizeMol(frag_mol_with_h, catchErrors=True)
                     except:
                         continue
                 
-                canonical_smi = Chem.MolToSmiles(frag_mol_clean, canonical=True)
+                canonical_smi = Chem.MolToSmiles(frag_mol_with_h, canonical=True)
                 if canonical_smi in seen_canonical_smiles:
                     continue
                 
-                frag_fp = fpgen.GetFingerprint(frag_mol_clean)
+                frag_fp = fpgen.GetFingerprint(frag_mol_with_h)
                 similarity = DataStructs.TanimotoSimilarity(query_fp, frag_fp)
                 
                 if similarity >= similarity_threshold and similarity < 1.0:
@@ -946,13 +953,15 @@ if 'similar_fragments' not in st.session_state:
     st.session_state.similar_fragments = None
 if 'last_selected_for_replace' not in st.session_state:
     st.session_state.last_selected_for_replace = None
+if 'example_dropdown' not in st.session_state:
+    st.session_state.example_dropdown = "-- Select an example --"
 
 # Main input with example dropdown
 col_input, col_example = st.columns([3, 1])
 
 def on_example_change():
     """Callback when example dropdown changes."""
-    selected = st.session_state.example_dropdown
+    selected = st.session_state.get('example_dropdown', "-- Select an example --")
     if selected != "-- Select an example --" and examples.get(selected):
         st.session_state.smiles_text_input = examples[selected]
         st.session_state.smiles_input = examples[selected]
@@ -1189,7 +1198,7 @@ if smiles_input:
                 
                 def update_progress(progress):
                     progress_bar.progress(progress)
-                    status_text.text(f"Searching similar fragments... {int(progress * 100)}% complete")
+                    status_text.text(f"Searching fragment library for similar fragments... {int(progress * 100)}% complete")
                 
                 try:
                     similar = find_similar_fragments(
@@ -1611,7 +1620,7 @@ if smiles_input:
                                         # Create button for each molecule
                                         is_selected = (idx == st.session_state.selected_3d_mol_idx)
                                         if st.button(
-                                            f"Mol {idx + 1} (Sim: {info['mol_similarity']:.3f})" if info['mol_similarity'] else f"Mol {idx + 1}",
+                                            f"ID: {idx + 1} (Sim: {info['mol_similarity']:.3f})" if info['mol_similarity'] else f"ID: {idx + 1}",
                                             key=f"mol3d_btn_{idx}",
                                             type="primary" if is_selected else "secondary",
                                             width='stretch'
@@ -1871,7 +1880,14 @@ if smiles_input:
                         
                         
                         # Retrosynthetic Planning Section
-                        with st.expander("🧪 Retrosynthetic Planning", expanded=False):
+                        # Initialize session state for retrosynthesis expander
+                        if 'retro_expander_open' not in st.session_state:
+                            st.session_state.retro_expander_open = False
+                        
+                        with st.expander("🧪 Retrosynthetic Planning", expanded=st.session_state.retro_expander_open):
+                            # Keep expander open once user interacts with it
+                            st.session_state.retro_expander_open = True
+                            
                             st.markdown("*Select a molecule to predict retrosynthetic routes:*")
                             
                             # Initialize session state for retrosynthesis
@@ -1891,7 +1907,7 @@ if smiles_input:
                             for idx, info in enumerate(filtered_reassembled_info):
                                 mol = info['mol']
                                 smiles = info['smiles']
-                                mol_id = f"Mol_{idx + 1}"
+                                mol_id = f"ID {idx + 1}"
                                 
                                 # Generate 2D image
                                 try:
@@ -1918,27 +1934,37 @@ if smiles_input:
                             mol_cards_html.append('</div>')
                             components.html(''.join(mol_cards_html), height=330, scrolling=True)
                             
-                            # Molecule selection dropdown
-                            mol_options = [f"Mol_{idx + 1}" for idx in range(len(filtered_reassembled_info))]
+                            # Molecule selection dropdown - use index directly without updating session state on every change
+                            mol_options = [f"ID {idx + 1}" for idx in range(len(filtered_reassembled_info))]
+                            
+                            # Determine the current index - use stored value or default to 0
+                            current_idx = st.session_state.retro_selected_mol_idx if st.session_state.retro_selected_mol_idx is not None else 0
+                            # Ensure index is within bounds
+                            if current_idx >= len(mol_options):
+                                current_idx = 0
+                            
                             selected_mol = st.selectbox(
                                 "Select molecule for retrosynthesis:",
                                 options=mol_options,
-                                index=st.session_state.retro_selected_mol_idx if st.session_state.retro_selected_mol_idx is not None else 0,
+                                index=current_idx,
                                 key="retro_mol_selector"
                             )
                             
                             if selected_mol:
-                                selected_idx = int(selected_mol.split("_")[1]) - 1
-                                st.session_state.retro_selected_mol_idx = selected_idx
+                                selected_idx = int(selected_mol.split(" ")[1]) - 1
+                                # Only update session state if it actually changed (avoid unnecessary reruns)
+                                if st.session_state.retro_selected_mol_idx != selected_idx:
+                                    st.session_state.retro_selected_mol_idx = selected_idx
+                                
                                 selected_info = filtered_reassembled_info[selected_idx]
                                 selected_smiles = selected_info['smiles']
                                 
-                                # Display selected molecule info
+                                # Display selected molecule info using cached/pre-computed image when possible
                                 col1, col2 = st.columns([1, 2])
                                 with col1:
+                                    # Use the mol object that already has 2D coords from earlier processing
                                     sel_mol = selected_info['mol']
                                     try:
-                                        AllChem.Compute2DCoords(sel_mol)
                                         sel_img = Draw.MolToImage(sel_mol, size=(550, 550))
                                         st.image(sel_img, caption=f"Selected: {selected_mol}")
                                     except:
@@ -1958,43 +1984,63 @@ if smiles_input:
                                 if st.session_state.retro_running:
                                     st.session_state.retro_running = False
                                     
-                                    with st.spinner("Running retrosynthetic analysis... This may take 1-2 minutes."):
-                                        try:
-                                            # Import and run synplanner
-                                            import synplanner
-                                            
-                                            # Check if SynPlanner is available
-                                            if not synplanner.SYNPLANNER_AVAILABLE:
-                                                st.error("⚠️ SynPlanner is not installed. Please install it with: `pip install synplan`")
-                                            else:
-                                                # Initialize if needed
-                                                if synplanner._building_blocks is None:
-                                                    with st.status("Initializing SynPlanner...", expanded=True):
-                                                        st.write("Downloading/loading data...")
-                                                        # Use custom building blocks SDF with IDs
-                                                        import os
-                                                        bb_sdf_path = os.path.join(os.path.dirname(__file__), "data", "building_blocks_em_sa_ln_with_ids.sdf")
-                                                        success = synplanner.initialize_synplanner(
-                                                            building_blocks_sdf_path=bb_sdf_path if os.path.exists(bb_sdf_path) else None
-                                                        )
-                                                        if not success:
-                                                            st.error("Failed to initialize SynPlanner")
-                                                
-                                                # Run planning
-                                                result = synplanner.plan_synthesis(
-                                                    selected_smiles,
-                                                    max_routes=4,
-                                                    return_svg=True
+                                    # Create progress bar for retrosynthesis
+                                    progress_bar = st.progress(0)
+                                    status_text = st.empty()
+                                    
+                                    try:
+                                        # Import and run synplanner
+                                        import synplanner
+                                        
+                                        # Check if SynPlanner is available
+                                        if not synplanner.SYNPLANNER_AVAILABLE:
+                                            st.error("⚠️ SynPlanner is not installed. Please install it with: `pip install SynPlanner`")
+                                        else:
+                                            # Initialize if needed
+                                            if synplanner._building_blocks is None:
+                                                status_text.text("Step 1/3: Initializing SynPlanner...")
+                                                progress_bar.progress(10)
+                                                # Use custom building blocks SDF.gz with IDs
+                                                import os
+                                                bb_sdf_gz_path = os.path.join(os.path.dirname(__file__), "data", "building_blocks_em_sa_ln_with_ids.sdf.gz")
+                                                success = synplanner.initialize_synplanner(
+                                                    building_blocks_sdf_path=bb_sdf_gz_path if os.path.exists(bb_sdf_gz_path) else None
                                                 )
-                                                
-                                                # Store results
-                                                st.session_state.retro_results[selected_smiles] = result
-                                                st.rerun()
-                                                
-                                        except ImportError:
-                                            st.error("⚠️ SynPlanner module not found. Make sure synplanner.py is in the same directory.")
-                                        except Exception as e:
-                                            st.error(f"Error running retrosynthesis: {str(e)}")
+                                                if not success:
+                                                    st.error("Failed to initialize SynPlanner")
+                                            
+                                            # Run planning with progress updates
+                                            status_text.text("Step 2/3: Running MCTS tree search...")
+                                            progress_bar.progress(30)
+                                            
+                                            result = synplanner.plan_synthesis(
+                                                selected_smiles,
+                                                max_routes=4,
+                                                return_svg=True
+                                            )
+                                            
+                                            status_text.text("Step 3/3: Processing synthesis routes...")
+                                            progress_bar.progress(90)
+                                            
+                                            # Store results
+                                            st.session_state.retro_results[selected_smiles] = result
+                                            
+                                            progress_bar.progress(100)
+                                            status_text.text("Complete!")
+                                            import time
+                                            time.sleep(0.5)
+                                            progress_bar.empty()
+                                            status_text.empty()
+                                            st.rerun()
+                                            
+                                    except ImportError:
+                                        progress_bar.empty()
+                                        status_text.empty()
+                                        st.error("⚠️ SynPlanner module not found. Make sure synplanner.py is in the same directory.")
+                                    except Exception as e:
+                                        progress_bar.empty()
+                                        status_text.empty()
+                                        st.error(f"Error running retrosynthesis: {str(e)}")
                                 
                                 # Display results if available
                                 if selected_smiles in st.session_state.retro_results:
@@ -2575,7 +2621,7 @@ if smiles_input:
                         
                         # Show filtered molecules in an expander
                         if filtered_info:
-                            with st.expander(f"🚫 Filtered Molecules ({len(filtered_info)} molecules with undesirable substructures)", expanded=False):
+                            with st.expander(f"🚫 Discarded Molecules ({len(filtered_info)} molecules with undesirable substructures)", expanded=False):
                                 st.markdown("*These molecules were filtered out due to containing structural alerts:*")
                                 
                                 # Build HTML grid for filtered molecules

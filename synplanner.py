@@ -283,7 +283,20 @@ def initialize_synplanner(
         # Load building blocks
         if building_blocks_sdf_path is not None:
             building_blocks_sdf_path = Path(building_blocks_sdf_path)
-            # Also check for decompressed version if .gz was passed
+            
+            # Handle .sdf.gz files directly
+            if str(building_blocks_sdf_path).endswith('.sdf.gz'):
+                if building_blocks_sdf_path.exists():
+                    # Decompress to a .sdf file
+                    decompressed_path = Path(str(building_blocks_sdf_path)[:-3])  # Remove .gz
+                    if not decompressed_path.exists():
+                        print(f"Decompressing {building_blocks_sdf_path.name}...")
+                        with gzip.open(building_blocks_sdf_path, 'rb') as f_in:
+                            with open(decompressed_path, 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
+                    building_blocks_sdf_path = decompressed_path
+            
+            # Also check for decompressed version if .sdf was passed
             if not building_blocks_sdf_path.exists() and str(building_blocks_sdf_path).endswith('.sdf'):
                 gz_path = Path(str(building_blocks_sdf_path) + '.gz')
                 if gz_path.exists():

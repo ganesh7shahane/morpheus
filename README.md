@@ -68,7 +68,7 @@ It helps medicinal & computational chemists explore chemical space and thus crea
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/morpheus.git
+   git clone https://github.com/ganesh7shahane/morpheus.git
    cd morpheus
    ```
 
