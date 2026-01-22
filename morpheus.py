@@ -1189,9 +1189,33 @@ if smiles_input:
             
             selected_frag = all_frags[selected]
                 
+            # Search parameters configuration
+            st.markdown("**Search Parameters:**")
+            param_col1, param_col2 = st.columns(2)
+            with param_col1:
+                similarity_threshold = st.slider(
+                    "Similarity Threshold",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=0.3,
+                    step=0.05,
+                    help="Minimum Tanimoto similarity for fragment matching",
+                    key="similarity_threshold_slider"
+                )
+            with param_col2:
+                top_n = st.slider(
+                    "Maximum Results",
+                    min_value=10,
+                    max_value=200,
+                    value=50,
+                    step=10,
+                    help="Maximum number of similar fragments to return",
+                    key="top_n_slider"
+                )
+            
             # Replace button
             st.markdown("")
-            if st.button("🔄 Replace", type="primary", width='stretch'):
+            if st.button("🔄 Search & Replace", type="primary", width='stretch'):
                 # Create progress bar
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -1204,8 +1228,8 @@ if smiles_input:
                     similar = find_similar_fragments(
                         selected_frag['wildcard_smiles'],
                         "data/fragments_cleaned_whole_filtered_chembl_with_smiles.txt.gz",
-                        similarity_threshold=0.2,
-                        top_n=100,
+                        similarity_threshold=similarity_threshold,
+                        top_n=top_n,
                         progress_callback=update_progress
                     )
                     progress_bar.progress(100)
@@ -1975,10 +1999,57 @@ if smiles_input:
                                     if 'mol_similarity' in selected_info and selected_info['mol_similarity']:
                                         st.markdown(f"**Similarity:** {selected_info['mol_similarity']:.3f}")
                                     
-                                    # Run retrosynthesis button
-                                    if st.button("🔬 Run Retrosynthetic Planning", key="run_retro_btn", type="primary"):
-                                        st.session_state.retro_running = True
-                                        st.rerun()
+                                    # Retrosynthesis parameters
+                                    st.markdown("**Planning Parameters:**")
+                                    
+                                    # Max reaction steps slider
+                                    max_reaction_steps = st.slider(
+                                        "Max Reaction Steps",
+                                        min_value=1,
+                                        max_value=9,
+                                        value=3,
+                                        step=1,
+                                        help="Maximum depth of the retrosynthetic tree (number of reaction steps). Higher values explore longer routes but take more time.",
+                                        key="max_reaction_steps_slider"
+                                    )
+                                    
+                                    # Max MCTS iterations slider
+                                    max_iterations = st.slider(
+                                        "Max MCTS Iterations",
+                                        min_value=50,
+                                        max_value=500,
+                                        value=150,
+                                        step=50,
+                                        help="Maximum number of Monte Carlo Tree Search iterations. More iterations explore more routes but take longer. Increase if no routes are found.",
+                                        key="max_iterations_slider"
+                                    )
+                                    
+                                    # Min molecule size slider
+                                    min_mol_size = st.slider(
+                                        "Min Precursor Size",
+                                        min_value=1,
+                                        max_value=10,
+                                        value=1,
+                                        step=1,
+                                        help="Minimum number of heavy atoms for a molecule to be considered as a valid precursor/building block. Higher values avoid trivially small fragments.",
+                                        key="min_mol_size_slider"
+                                    )
+                                    
+                                    # Number of routes slider
+                                    num_routes = st.slider(
+                                        "Number of Routes",
+                                        min_value=1,
+                                        max_value=10,
+                                        value=5,
+                                        step=1,
+                                        help="Maximum number of synthesis routes to return. Routes are sorted by number of reaction steps (shorter routes first).",
+                                        key="num_routes_slider"
+                                    )
+                                
+                                # Run retrosynthesis button at bottom of expander (full width)
+                                if st.button("🔬 Run Retrosynthetic Planning", key="run_retro_btn", type="primary", use_container_width=True):
+                                    st.session_state.retro_running = True
+                                    st.rerun()
                                 
                                 # Check if we need to run retrosynthesis
                                 if st.session_state.retro_running:
@@ -2015,8 +2086,11 @@ if smiles_input:
                                             
                                             result = synplanner.plan_synthesis(
                                                 selected_smiles,
-                                                max_routes=4,
-                                                return_svg=True
+                                                max_routes=num_routes,
+                                                return_svg=True,
+                                                max_depth=max_reaction_steps,
+                                                max_iterations=max_iterations,
+                                                min_mol_size=min_mol_size
                                             )
                                             
                                             status_text.text("Step 3/3: Processing synthesis routes...")
@@ -2053,8 +2127,13 @@ if smiles_input:
                                         routes = result.get('routes', [])
                                         st.success(f"✅ Found {len(routes)} synthesis route(s)")
                                         
+                                        # Explanation of route score
+                                        st.info("ℹ️ **Route Score:** Higher scores indicate more favorable routes. The score combines factors such as predicted reaction success rates and availability of building blocks. Routes are sorted by number of steps (shorter first), then by score.")
+                                        
                                         for i, route in enumerate(routes):
-                                            with st.expander(f"Route {i + 1} (Score: {route.get('score', 'N/A'):.4f})", expanded=(i == 0)):
+                                            num_steps = route.get('num_steps', 'N/A')
+                                            score = route.get('score', 0)
+                                            with st.expander(f"Route {i + 1} — {num_steps} step{'s' if num_steps != 1 else ''} (Score: {score:.4f})", expanded=(i == 0)):
                                                 if route.get('svg'):
                                                     # Display SVG
                                                     svg_html = f'''
@@ -2085,7 +2164,7 @@ if smiles_input:
                                                         st.caption(f"Error: {route['svg_error']}")
                                     
                                     elif result.get('success'):
-                                        st.warning("⚠️ No synthesis route found for this molecule. The molecule may be too complex or contain unusual substructures.")
+                                        st.warning("⚠️ No synthesis route found for this molecule. The molecule may be too complex or contain unusual substructures. Try increasing the max reaction steps.")
                                     
                                     else:
                                         st.error(f"❌ Error: {result.get('error', 'Unknown error')}")

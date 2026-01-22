@@ -11,6 +11,7 @@ Usage:
 import argparse
 import gzip
 import json
+import pickle
 import shutil
 import sys
 from pathlib import Path
@@ -173,6 +174,10 @@ def load_building_blocks_with_ids(sdf_path: Path) -> tuple:
     Load building blocks from an SDF file and extract both SMILES and IDs.
     Uses CGRtools canonicalization for consistency with SynPlanner.
     
+    This function implements caching: after the first load from SDF (which is slow),
+    the results are saved to a pickle file. Subsequent loads use the pickle cache,
+    which is ~10-20x faster.
+    
     Returns:
         building_blocks: frozenset of canonical SMILES (for tree search)
         smiles_to_id: dict mapping canonical SMILES to building block IDs
@@ -182,12 +187,30 @@ def load_building_blocks_with_ids(sdf_path: Path) -> tuple:
     if not RDKIT_AVAILABLE:
         raise ImportError("RDKit is required to load building blocks from SDF")
     
+    # Check for cached pickle file (much faster to load)
+    cache_path = sdf_path.with_suffix('.pickle')
+    if cache_path.exists():
+        # Check if cache is newer than the SDF file
+        if cache_path.stat().st_mtime >= sdf_path.stat().st_mtime:
+            try:
+                print(f"Loading building blocks from cache: {cache_path.name}")
+                with open(cache_path, 'rb') as f:
+                    cached_data = pickle.load(f)
+                _building_blocks_id_map = cached_data['smiles_to_id']
+                print(f"Loaded {len(cached_data['building_blocks'])} building blocks from cache")
+                return cached_data['building_blocks'], cached_data['smiles_to_id']
+            except Exception as e:
+                print(f"Cache load failed ({e}), falling back to SDF parsing...")
+    
+    # Parse SDF file (slow path - only on first run or if cache is stale)
+    print(f"Parsing building blocks from SDF (this may take a minute on first run)...")
     building_blocks_set = set()
     smiles_to_id = {}
     
     suppl = Chem.SDMolSupplier(str(sdf_path))
+    total_mols = len(suppl)
     
-    for mol in suppl:
+    for idx, mol in enumerate(suppl):
         if mol is None:
             continue
         try:
@@ -214,14 +237,31 @@ def load_building_blocks_with_ids(sdf_path: Path) -> tuple:
             # Also store original SMILES mapping
             if rdkit_smiles != canonical_smiles:
                 smiles_to_id[rdkit_smiles] = mol_id
+            
+            # Progress indicator every 50000 molecules
+            if (idx + 1) % 50000 == 0:
+                print(f"  Processed {idx + 1}/{total_mols} molecules...")
                 
         except Exception as e:
             continue
     
     _building_blocks_id_map = smiles_to_id
+    building_blocks_frozen = frozenset(building_blocks_set)
     print(f"Loaded {len(building_blocks_set)} building blocks with {len(smiles_to_id)} ID mappings")
     
-    return frozenset(building_blocks_set), smiles_to_id
+    # Save to cache for faster loading next time
+    try:
+        print(f"Saving building blocks cache to {cache_path.name}...")
+        with open(cache_path, 'wb') as f:
+            pickle.dump({
+                'building_blocks': building_blocks_frozen,
+                'smiles_to_id': smiles_to_id
+            }, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print("Cache saved successfully")
+    except Exception as e:
+        print(f"Warning: Could not save cache ({e})")
+    
+    return building_blocks_frozen, smiles_to_id
 
 
 def get_building_block_id(smiles: str) -> Optional[str]:
@@ -585,9 +625,20 @@ def plan_synthesis(
     smiles: str,
     max_routes: int = 4,
     return_svg: bool = True,
+    max_depth: int = None,
+    max_iterations: int = None,
+    min_mol_size: int = None,
 ) -> Dict[str, Any]:
     """
     Plan retrosynthetic routes for a given SMILES string.
+    
+    Args:
+        smiles: Target molecule SMILES string
+        max_routes: Maximum number of routes to return
+        return_svg: Whether to generate SVG visualizations
+        max_depth: Maximum number of reaction steps (default: use initialized value, typically 9)
+        max_iterations: Maximum MCTS iterations (default: use initialized value, typically 300)
+        min_mol_size: Minimum molecule size (heavy atoms) to be considered a precursor (default: 1)
     """
     global _building_blocks, _reaction_rules, _policy_function, _evaluation_function, _tree_config
     
@@ -620,10 +671,30 @@ def plan_synthesis(
                 'error': f'Could not parse SMILES: {smiles}'
             }
         
+        # Create tree config with optional parameter overrides
+        tree_config = _tree_config
+        needs_new_config = (
+            (max_depth is not None and max_depth != _tree_config.max_depth) or
+            (max_iterations is not None and max_iterations != _tree_config.max_iterations) or
+            (min_mol_size is not None and min_mol_size != _tree_config.min_mol_size)
+        )
+        if needs_new_config:
+            # Create a new config with the specified parameters
+            tree_config = TreeConfig(
+                search_strategy=_tree_config.search_strategy,
+                max_iterations=max_iterations if max_iterations is not None else _tree_config.max_iterations,
+                max_time=_tree_config.max_time,
+                max_depth=max_depth if max_depth is not None else _tree_config.max_depth,
+                min_mol_size=min_mol_size if min_mol_size is not None else _tree_config.min_mol_size,
+                init_node_value=_tree_config.init_node_value,
+                ucb_type=_tree_config.ucb_type,
+                c_ucb=_tree_config.c_ucb,
+            )
+        
         # Create the search tree
         tree = Tree(
             target=target_molecule,
-            config=_tree_config,
+            config=tree_config,
             reaction_rules=_reaction_rules,
             building_blocks=_building_blocks,
             expansion_function=_policy_function,
@@ -639,13 +710,35 @@ def plan_synthesis(
         # Collect routes
         routes = []
         if tree_solved and hasattr(tree, 'winning_nodes'):
-            for n, node_id in enumerate(tree.winning_nodes):
+            # First, collect all routes with their depth information
+            all_routes_info = []
+            for node_id in tree.winning_nodes:
+                # Calculate route depth (number of reaction steps)
+                try:
+                    nodes = tree.route_to_node(node_id)
+                    route_depth = len(nodes) - 1  # -1 because first node is target, not a reaction step
+                except:
+                    route_depth = 999  # Default high value if we can't calculate
+                
+                all_routes_info.append({
+                    'node_id': node_id,
+                    'depth': route_depth,
+                    'score': tree.route_score(node_id),
+                })
+            
+            # Sort routes: prioritize shorter routes (fewer steps), then by score (higher is better)
+            all_routes_info.sort(key=lambda x: (x['depth'], -x['score']))
+            
+            # Take top max_routes after sorting
+            for n, route_data in enumerate(all_routes_info):
                 if n >= max_routes:
                     break
                 
+                node_id = route_data['node_id']
                 route_info = {
                     'node_id': node_id,
-                    'score': tree.route_score(node_id),
+                    'score': route_data['score'],
+                    'num_steps': route_data['depth'],
                 }
                 
                 if return_svg:
