@@ -1256,7 +1256,7 @@ if smiles_input:
                 top_n = st.slider(
                     "Maximum Results",
                     min_value=10,
-                    max_value=200,
+                    max_value=500,
                     value=50,
                     step=10,
                     help="Maximum number of similar fragments to return",
