@@ -19,7 +19,7 @@ import base64
 import gzip
 import pandas as pd
 import mols2grid
-import py3Dmol
+import requests
 
 # Page configuration
 st.set_page_config(
@@ -799,7 +799,55 @@ def find_similar_fragments(query_smiles: str,
     
     RDLogger.EnableLog('rdApp.*')
     similar_fragments.sort(key=lambda x: x[1], reverse=True)
-    return similar_fragments[:top_n]
+    
+    # Filter out racemic forms when both R and S enantiomers exist
+    def get_achiral_smiles(smiles: str) -> str:
+        """Get SMILES with stereochemistry removed for grouping."""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return smiles
+        # Remove all stereochemistry
+        Chem.RemoveStereochemistry(mol)
+        return Chem.MolToSmiles(mol, canonical=True)
+    
+    def has_stereocenters(smiles: str) -> bool:
+        """Check if SMILES has defined stereocenters."""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False
+        # Check for @ symbols which indicate stereocenters
+        chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+        return len(chiral_centers) > 0
+    
+    # Group fragments by their achiral form
+    achiral_groups = {}  # achiral_smiles -> list of (original_smiles, similarity, n_attach, has_stereo)
+    for smiles, similarity, n_attach in similar_fragments:
+        achiral = get_achiral_smiles(smiles)
+        has_stereo = has_stereocenters(smiles)
+        if achiral not in achiral_groups:
+            achiral_groups[achiral] = []
+        achiral_groups[achiral].append((smiles, similarity, n_attach, has_stereo))
+    
+    # Filter: if a group has both chiral and achiral versions, remove the achiral ones
+    filtered_fragments = []
+    for achiral, group in achiral_groups.items():
+        chiral_versions = [g for g in group if g[3]]  # has_stereo = True
+        achiral_versions = [g for g in group if not g[3]]  # has_stereo = False
+        
+        # If we have 2+ chiral versions (R and S) and also achiral (racemic), skip the achiral
+        if len(chiral_versions) >= 2 and len(achiral_versions) > 0:
+            # Keep only the chiral versions
+            for smiles, similarity, n_attach, _ in chiral_versions:
+                filtered_fragments.append((smiles, similarity, n_attach))
+        else:
+            # Keep all versions
+            for smiles, similarity, n_attach, _ in group:
+                filtered_fragments.append((smiles, similarity, n_attach))
+    
+    # Re-sort by similarity after filtering
+    filtered_fragments.sort(key=lambda x: x[1], reverse=True)
+    
+    return filtered_fragments[:top_n]
 
 
 # ============================================================================
@@ -928,7 +976,9 @@ st.markdown("Decompose molecules into ring and non-ring fragments with wildcard 
 # Example molecules
 examples = {
     "-- Select an example --": "",
+    "AZ20": "C[C@@H]1COCCN1C2=NC(=NC(=C2)C3(CC3)[S@](=O)(=O)C)C4=CN=CC5=C4C=CN5",
     "Imatinib": "CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5",
+    "Rofecoxib": "CS(=O)(=O)C1=CC=C(C2=C(C3=CC=CC=C3)C(=O)OC2)C=C1",
     "Gefitinib": "COc1cc2ncnc(c2cc1OCCCN1CCOCC1)Nc1ccc(c(c1)Cl)F",
     "Ibrutinib": "C=CC(=O)N1CCC[C@H](C1)N2C3=NC=NC(=C3C(=N2)C4=CC=C(C=C4)OC5=CC=CC=C5)N",
     "Acalabrutinib": "CC#CC(=O)N1CCC[C@H]1C2=NC(=C3N2C=CN=C3N)C4=CC=C(C=C4)C(=O)NC5=CC=CC=N5",
@@ -1222,7 +1272,7 @@ if smiles_input:
                 
                 def update_progress(progress):
                     progress_bar.progress(progress)
-                    status_text.text(f"Searching fragment library for similar fragments... {int(progress * 100)}% complete")
+                    status_text.text(f"Searching fragment library... {int(progress * 100)}% complete")
                 
                 try:
                     similar = find_similar_fragments(
@@ -1509,6 +1559,9 @@ if smiles_input:
                         # Filter molecules based on slider values
                         filtered_reassembled_info = [info for info in reassembled_info if passes_filters(info)]
                         
+                        # Store filtered_info in session state for display at bottom of app
+                        st.session_state.discarded_molecules = filtered_info
+                        
                         st.success(f"Replacement successful! ({len(reassembled_mols)} molecules generated, {len(filtered_info)} filtered by structural alerts, {len(filtered_reassembled_info)} displayed after property filters)")
                         
                         # Sort filtered_reassembled_info by Tanimoto similarity (descending)
@@ -1600,7 +1653,7 @@ if smiles_input:
                             elif num_mols <= 16:
                                 grid_height = 1600
                             elif num_mols > 16:
-                                grid_height = 1950
+                                grid_height = 2000
                             else:
                                 grid_height = 1200  # Middle ground for 9-16 molecules
                             
@@ -2006,8 +2059,8 @@ if smiles_input:
                                     max_reaction_steps = st.slider(
                                         "Max Reaction Steps",
                                         min_value=1,
-                                        max_value=9,
-                                        value=3,
+                                        max_value=12,
+                                        value=4,
                                         step=1,
                                         help="Maximum depth of the retrosynthetic tree (number of reaction steps). Higher values explore longer routes but take more time.",
                                         key="max_reaction_steps_slider"
@@ -2018,7 +2071,7 @@ if smiles_input:
                                         "Max MCTS Iterations",
                                         min_value=50,
                                         max_value=500,
-                                        value=150,
+                                        value=200,
                                         step=50,
                                         help="Maximum number of Monte Carlo Tree Search iterations. More iterations explore more routes but take longer. Increase if no routes are found.",
                                         key="max_iterations_slider"
@@ -2158,7 +2211,7 @@ if smiles_input:
                                                                 smiles_escaped = bb['smiles'].replace("'", "\\'").replace('"', '&quot;')
                                                                 smiles_display = bb['smiles'][:30] + ("..." if len(bb['smiles']) > 30 else "")
                                                                 bb_cards.append(f'''
-                                                                <div style="background: #e8f5e9; border: 1px solid #4caf50; border-radius: 4px; padding: 8px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+                                                                <div style="background: #e8f5e9; border: 1px solid #4caf50; border-radius: 4px; padding: 4px 14px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
                                                                     <div style="flex-grow: 1;">
                                                                         <b style="color: #2e7d32;">{bb['id']}</b>: <code style="font-size: 13px;">{smiles_display}</code>
                                                                     </div>
@@ -2200,7 +2253,7 @@ if smiles_input:
                                                             smiles_escaped = inter['smiles'].replace("'", "\\'").replace('"', '&quot;')
                                                             smiles_display = inter['smiles'][:35] + ("..." if len(inter['smiles']) > 35 else "")
                                                             int_cards.append(f'''
-                                                            <div style="background: #fff3e0; border: 1px solid #ff9800; border-radius: 4px; padding: 8px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+                                                            <div style="background: #fff3e0; border: 1px solid #ff9800; border-radius: 4px; padding: 4px 14px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
                                                                 <div style="flex-grow: 1;">
                                                                     <b style="color: #e65100;">Int-{idx + 1}</b>: <code style="font-size: 13px;">{smiles_display}</code>
                                                                 </div>
@@ -2238,7 +2291,7 @@ if smiles_input:
                                                         st.caption(f"Error: {route['svg_error']}")
                                     
                                     elif result.get('success'):
-                                        st.warning("⚠️ No synthesis route found for this molecule. The molecule may be too complex or contain unusual substructures. Try increasing the max reaction steps.")
+                                        st.warning("⚠️ No synthesis route found for this molecule. Try increasing the maximum reaction steps and/or the number of MCTS iterations to encourage a more thorough search. The molecule may be too complex or contain unusual substructures.")
                                     
                                     else:
                                         st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
@@ -2248,568 +2301,571 @@ if smiles_input:
                                         del st.session_state.retro_results[selected_smiles]
                                         st.rerun()
                         
-                        # # PDB Structure Viewer
-                        # with st.expander("🧬 Protein Structure Viewer (PDB)", expanded=False):
-                        #     #st.markdown("*Upload a PDB file to visualize protein structure with bound ligands:*")
+                        # PDB Structure Viewer
+                        with st.expander("🧬 Protein Structure Viewer (PDB)", expanded=False):
+                            st.markdown("**Load a PDB structure to visualize with Mol*:**")
                             
-                        #     # PDB file uploader
-                        #     uploaded_pdb = st.file_uploader("Upload PDB file", type=['pdb'], key="pdb_uploader")
+                            # Two options: upload file or fetch by PDB ID
+                            pdb_input_col1, pdb_input_col2 = st.columns(2)
                             
-                        #     if uploaded_pdb is not None:
-                        #         # Store PDB content in session state to persist across reruns
-                        #         # Only read the file if it's a new upload
-                        #         if 'pdb_content' not in st.session_state or st.session_state.get('pdb_filename') != uploaded_pdb.name:
-                        #             st.session_state.pdb_content = uploaded_pdb.read().decode('utf-8')
-                        #             st.session_state.pdb_filename = uploaded_pdb.name
-                        #             # Reset ligand detection when new PDB is uploaded
-                        #             st.session_state.pdb_detected_ligand = None
-                        #             st.session_state.pdb_ligand_smiles = None
-                        #             st.session_state.pdb_ligand_similarity = None
-                        #             st.session_state.pdb_ligand_mol = None
-                                
-                        #         # Add a button to re-detect ligand (useful if detection needs to be re-run)
-                        #         redetect_col1, redetect_col2 = st.columns([1, 4])
-                        #         with redetect_col1:
-                        #             if st.button("🔄 Re-detect Ligand", key="redetect_ligand_btn"):
-                        #                 st.session_state.pdb_detected_ligand = None
-                        #                 st.session_state.pdb_ligand_smiles = None
-                        #                 st.session_state.pdb_ligand_similarity = None
-                        #                 st.session_state.pdb_ligand_mol = None
-                        #                 st.rerun()
-                                
-                        #         pdb_content = st.session_state.pdb_content
-                                
-                        #         # Detect chains in the PDB file
-                        #         chains = set()
-                        #         for line in pdb_content.split('\n'):
-                        #             if line.startswith('ATOM') or line.startswith('HETATM'):
-                        #                 if len(line) > 21:
-                        #                     chain_id = line[21].strip()
-                        #                     if chain_id:
-                        #                         chains.add(chain_id)
-                        #         chains = sorted(list(chains))
-                                
-                        #         # ============== AUTO-DETECT LIGAND FROM PDB ==============
-                        #         # Extract ligand from HETATM records (excluding water)
-                        #         import re
-                        #         ligand_hetatm_lines = [line for line in pdb_content.split('\n') 
-                        #                                if line.startswith('HETATM') and not re.search(r'\b(HOH|WAT)\b', line)]
-                                
-                        #         # Group ligands by residue name and chain
-                        #         ligand_groups = {}
-                        #         for line in ligand_hetatm_lines:
-                        #             resn = line[17:20].strip()
-                        #             chain = line[21].strip()
-                        #             resi = line[22:26].strip()
-                        #             key = (resn, chain, resi)
-                        #             if key not in ligand_groups:
-                        #                 ligand_groups[key] = []
-                        #             ligand_groups[key].append(line)
-                                
-                        #         # Try to detect and convert the ligand to SMILES
-                        #         detected_ligand_info = None
-                        #         pdb_ligand_mol_with_h = None
-                                
-                        #         if ligand_groups and 'pdb_detected_ligand' not in st.session_state or st.session_state.pdb_detected_ligand is None:
-                        #             # Try each ligand group to find one matching the input molecule
-                        #             best_match = None
-                        #             best_similarity = 0.0
-                                    
-                        #             for (resn, chain, resi), lines in ligand_groups.items():
-                        #                 try:
-                        #                     # Create a mini PDB block for this ligand
-                        #                     ligand_pdb_block = '\n'.join(lines) + '\nEND\n'
-                                            
-                        #                     # Try to parse with RDKit - PDB files don't have bond order info
-                        #                     ligand_mol_raw = Chem.MolFromPDBBlock(ligand_pdb_block, removeHs=False, sanitize=False)
-                        #                     if ligand_mol_raw is None:
-                        #                         continue
-                                            
-                        #                     # Get coordinates from the PDB for later use
-                        #                     conf = ligand_mol_raw.GetConformer()
-                        #                     coords_3d = [conf.GetAtomPosition(i) for i in range(ligand_mol_raw.GetNumAtoms())]
-                                            
-                        #                     # Try to sanitize to get proper bond orders
-                        #                     ligand_mol = None
-                        #                     try:
-                        #                         Chem.SanitizeMol(ligand_mol_raw)
-                        #                         ligand_mol = ligand_mol_raw
-                        #                     except:
-                        #                         # Try without hydrogens first
-                        #                         try:
-                        #                             ligand_mol = Chem.MolFromPDBBlock(ligand_pdb_block, removeHs=True, sanitize=True)
-                        #                         except:
-                        #                             pass
-                                            
-                        #                     if ligand_mol is None:
-                        #                         continue
-                                            
-                        #                     # Get SMILES of the ligand
-                        #                     ligand_smiles = Chem.MolToSmiles(ligand_mol)
-                        #                     if not ligand_smiles:
-                        #                         continue
-                                            
-                        #                     # Calculate similarity with input molecule
-                        #                     input_mol = Chem.MolFromSmiles(smiles_input)
-                        #                     if input_mol:
-                        #                         # Use Morgan fingerprints for similarity
-                        #                         fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
-                        #                         fp_input = fpgen.GetFingerprint(input_mol)
-                        #                         fp_ligand = fpgen.GetFingerprint(ligand_mol)
-                        #                         similarity = DataStructs.TanimotoSimilarity(fp_input, fp_ligand)
-                                                
-                        #                         if similarity > best_similarity:
-                        #                             best_similarity = similarity
-                                                    
-                        #                             # Try to assign bond orders from the input molecule template if similarity is high
-                        #                             ligand_mol_fixed = ligand_mol
-                        #                             try:
-                        #                                 if similarity >= 0.5:
-                        #                                     # Use input molecule as template for bond orders
-                        #                                     from rdkit.Chem import AllChem
-                        #                                     ligand_mol_fixed = AllChem.AssignBondOrdersFromTemplate(input_mol, ligand_mol)
-                        #                             except:
-                        #                                 ligand_mol_fixed = ligand_mol
-                                                    
-                        #                             # Add hydrogens with coordinates
-                        #                             ligand_mol_h = Chem.AddHs(ligand_mol_fixed, addCoords=True)
-                                                    
-                        #                             best_match = {
-                        #                                 'resn': resn,
-                        #                                 'chain': chain,
-                        #                                 'resi': resi,
-                        #                                 'smiles': Chem.MolToSmiles(ligand_mol_fixed),
-                        #                                 'similarity': similarity,
-                        #                                 'mol': ligand_mol_fixed,
-                        #                                 'mol_with_h': ligand_mol_h,
-                        #                                 'pdb_block': ligand_pdb_block
-                        #                             }
-                        #                 except Exception as e:
-                        #                     continue
-                                    
-                        #             # Store the best match in session state
-                        #             if best_match:
-                        #                 st.session_state.pdb_detected_ligand = best_match
-                        #                 st.session_state.pdb_ligand_smiles = best_match['smiles']
-                        #                 st.session_state.pdb_ligand_similarity = best_match['similarity']
-                        #                 st.session_state.pdb_ligand_mol = best_match['mol_with_h']
-                                
-                        #         # Display detected ligand info
-                        #         if st.session_state.get('pdb_detected_ligand'):
-                        #             detected = st.session_state.pdb_detected_ligand
-                        #             similarity_color = "#28a745" if detected['similarity'] >= 0.7 else "#ffc107" if detected['similarity'] >= 0.4 else "#dc3545"
-                                    
-                        #             # Generate 2D image of detected ligand
-                        #             try:
-                        #                 ligand_2d_mol = detected['mol']
-                        #                 AllChem.Compute2DCoords(ligand_2d_mol)
-                        #                 ligand_img = Draw.MolToImage(ligand_2d_mol, size=(250, 250))
-                        #                 ligand_img_buffer = io.BytesIO()
-                        #                 ligand_img.save(ligand_img_buffer, format='PNG')
-                        #                 ligand_img_b64 = base64.b64encode(ligand_img_buffer.getvalue()).decode('utf-8')
-                        #                 ligand_img_html = f'<img src="data:image/png;base64,{ligand_img_b64}" style="max-width: 250px; border-radius: 8px; border: 2px solid #ccc; background: white; padding: 5px;">'
-                        #             except:
-                        #                 ligand_img_html = '<div style="width: 250px; height: 250px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 8px; color: #999;">Structure not available</div>'
-                                    
-                        #             st.markdown(f"""
-                        #             <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid {similarity_color}; display: flex; gap: 15px; align-items: center;">
-                        #                 <div style="flex-shrink: 0;">
-                        #                     {ligand_img_html}
-                        #                 </div>
-                        #                 <div style="flex-grow: 1;">
-                        #                     <b>🔍 Detected Ligand:</b> {detected['resn']} (Chain {detected['chain']}, Residue {detected['resi']})<br>
-                        #                     <b>SMILES:</b> <code style="font-size: 11px;">{detected['smiles'][:80]}{'...' if len(detected['smiles']) > 80 else ''}</code><br>
-                        #                     <b>Similarity to Input:</b> <span style="color: {similarity_color}; font-weight: bold;">{detected['similarity']:.3f}</span>
-                        #                     {' ✓ Good match for alignment' if detected['similarity'] >= 0.4 else ' ⚠️ Low similarity - alignment may not be optimal'}
-                        #                 </div>
-                        #             </div>
-                        #             """, unsafe_allow_html=True)
-                                
-                        #         # Color pickers and chain selector
-                        #         color_col1, color_col2 = st.columns(2)
-                        #         with color_col1:
-                        #             # Chain selector dropdown (only if multiple chains detected)
-                        #             if len(chains) > 1:
-                        #                 chain_options = ["All chains"] + chains
-                        #                 selected_chain = st.selectbox(
-                        #                     "Select chain to visualize",
-                        #                     options=chain_options,
-                        #                     index=0,
-                        #                     key="pdb_chain_selector"
-                        #                 )
-                        #             else:
-                        #                 selected_chain = "All chains"
-                        #             protein_color = st.color_picker("Protein color", "#3498db", key="protein_color_picker")
-                        #         with color_col2:
-                        #             ligand_color = st.color_picker("Ligand carbon color", "#e74c3c", key="ligand_color_picker")
-                                    
-                                
-                        #         # Legend for the viewer
-                        #         chain_info = f" - Chain: {selected_chain}" if selected_chain != "All chains" else ""
-                        #         st.markdown(f"""
-                        #         <div style="margin-bottom: 10px; color: #333;">
-                        #             <span style="display: inline-block; width: 15px; height: 15px; background-color: {protein_color}; border-radius: 3px; margin-right: 5px;"></span>
-                        #             <span style="margin-right: 20px;">Protein (cartoon){chain_info}</span>
-                        #             <span style="display: inline-block; width: 15px; height: 15px; background-color: {ligand_color}; border-radius: 3px; margin-right: 5px;"></span>
-                        #             <span>Ligand/Small molecules (sticks)</span>
-                        #         </div>
-                        #         """, unsafe_allow_html=True)
-                                
-                        #         st.markdown(f"**Loaded:** {uploaded_pdb.name} ({len(chains)} chain{'s' if len(chains) != 1 else ''}: {', '.join(chains)})")
-                                
-                        #         # Create py3Dmol viewer
-                        #         # Layout: left = scrollable molecules, right = viewer
-                        #         pdb_col_list, pdb_col_viewer = st.columns([1, 3], gap="small")
-                        #         with pdb_col_list:
-                        #             st.markdown("**Generated Molecules**")
-                        #             mols_to_show = filtered_reassembled_info if 'filtered_reassembled_info' in locals() and filtered_reassembled_info else reassembled_info
-                        #             if 'selected_pdb_mol_idx' not in st.session_state:
-                        #                 st.session_state.selected_pdb_mol_idx = None
-                        #             with st.container(height=570):
-                        #                 for idx, info in enumerate(mols_to_show):
-                        #                     replacement_mol = Chem.MolFromSmiles(info['replacement_frag']) if 'replacement_frag' in info else None
-                        #                     if replacement_mol:
-                        #                         is_selected = (st.session_state.selected_pdb_mol_idx == idx)
-                        #                         align_btn = st.button(f"Align Mol {idx+1}", key=f"align_pdb_mol_{idx}", width='stretch', type="primary" if is_selected else "secondary")
-                        #                         if align_btn:
-                        #                             st.session_state.selected_pdb_mol_idx = idx
-                        #                             st.rerun()
-                        #                         frag_img = Draw.MolToImage(replacement_mol, size=(260, 220))
-                        #                         st.image(frag_img, width=260)
-                        #                         st.markdown(f"<div style='font-size:12px;text-align:center;'>Mol {idx+1} | Sim: {info.get('mol_similarity','N/A'):.3f}</div>", unsafe_allow_html=True)
-                        #                         st.markdown("<hr style='margin:8px 0;'>", unsafe_allow_html=True)
-                        #         with pdb_col_viewer:
-                        #             # Create py3Dmol viewer
-                        #             viewer = py3Dmol.view(width=900, height=550)
-                        #             viewer.addModel(pdb_content, 'pdb')
-                                    
-                        #             # Check if we have a detected ligand to display with correct bond orders
-                        #             detected_ligand = st.session_state.get('pdb_detected_ligand')
-                        #             ligand_resn = None
-                        #             ligand_chain = None
-                        #             ligand_resi = None
-                                    
-                        #             if detected_ligand and detected_ligand.get('mol_with_h'):
-                        #                 ligand_resn = detected_ligand['resn']
-                        #                 ligand_chain = detected_ligand['chain']
-                        #                 ligand_resi = detected_ligand['resi']
-                                    
-                        #             # Build chain selector for py3Dmol
-                        #             if selected_chain != "All chains":
-                        #                 viewer.setStyle({}, {})
-                        #                 viewer.setStyle({'chain': selected_chain}, {'cartoon': {'color': protein_color}})
-                        #                 # Style other HETATM (non-water, non-detected-ligand) as sticks
-                        #                 viewer.addStyle({'chain': selected_chain, 'hetflag': True, 'not': {'resn': ['HOH', 'WAT']}}, {'stick': {
-                        #                     'radius': 0.25,
-                        #                     'colorscheme': {
-                        #                         'prop': 'elem',
-                        #                         'map': {
-                        #                             'C': ligand_color,
-                        #                             'N': '#3050F8',
-                        #                             'O': '#FF0D0D',
-                        #                             'S': '#FFFF30',
-                        #                             'F': '#90E050',
-                        #                             'Cl': '#1FF01F',
-                        #                             'Br': '#A62929',
-                        #                             'I': '#940094',
-                        #                             'P': '#FF8000'
-                        #                         }
-                        #                     }
-                        #                 }})
-                        #             else:
-                        #                 viewer.setStyle({}, {'cartoon': {'color': protein_color}})
-                        #                 # Style HETATM (non-water) as sticks
-                        #                 viewer.addStyle({'hetflag': True, 'not': {'resn': ['HOH', 'WAT']}}, {'stick': {
-                        #                     'radius': 0.25,
-                        #                     'colorscheme': {
-                        #                         'prop': 'elem',
-                        #                         'map': {
-                        #                             'C': ligand_color,
-                        #                             'N': '#3050F8',
-                        #                             'O': '#FF0D0D',
-                        #                             'S': '#FFFF30',
-                        #                             'F': '#90E050',
-                        #                             'Cl': '#1FF01F',
-                        #                             'Br': '#A62929',
-                        #                             'I': '#940094',
-                        #                             'P': '#FF8000'
-                        #                         }
-                        #                     }
-                        #                 }})
-                        #                 viewer.setStyle({'resn': ['HOH', 'WAT']}, {})
-                                    
-                        #             # IMPORTANT: Hide the detected ligand from PDB (model 0) to prevent 
-                        #             # double display and incorrect bond orders (aliphatic instead of aromatic)
-                        #             if ligand_resn and ligand_resi:
-                        #                 viewer.setStyle({'model': 0, 'resn': ligand_resn, 'resi': int(ligand_resi)}, {})
-                                    
-                        #             # Add the detected ligand with correct bond orders from RDKit
-                        #             if detected_ligand and detected_ligand.get('mol_with_h'):
-                        #                 ligand_mol_block = Chem.MolToMolBlock(detected_ligand['mol_with_h'])
-                        #                 viewer.addModel(ligand_mol_block, 'sdf')
-                        #                 viewer.setStyle({'model': 1}, {'stick': {
-                        #                     'radius': 0.35,
-                        #                     'colorscheme': {
-                        #                         'prop': 'elem',
-                        #                         'map': {
-                        #                             'C': ligand_color,
-                        #                             'N': '#3050F8',
-                        #                             'O': '#FF0D0D',
-                        #                             'S': '#FFFF30',
-                        #                             'F': '#90E050',
-                        #                             'Cl': '#1FF01F',
-                        #                             'Br': '#A62929',
-                        #                             'I': '#940094',
-                        #                             'P': '#FF8000'
-                        #                         }
-                        #                     }
-                        #                 }})
-                                    
-                        #             viewer.setBackgroundColor('white')
-                        #             # Alignment logic: if a molecule is selected, align with ligand from PDB using MCS-based 3D alignment
-                        #             selected_idx = st.session_state.selected_pdb_mol_idx
-                        #             aligned_mol_block = None
-                        #             alignment_info = None
-                                    
-                        #             if selected_idx is not None and 0 <= selected_idx < len(mols_to_show):
-                        #                 # Use the detected ligand from session state if available
-                        #                 detected_ligand = st.session_state.get('pdb_detected_ligand')
-                                        
-                        #                 if detected_ligand and detected_ligand.get('mol_with_h'):
-                        #                     # Get the PDB ligand molecule with hydrogens and its crystal coordinates
-                        #                     pdb_ligand_mol = detected_ligand['mol_with_h']
-                        #                     resn = detected_ligand['resn']
-                        #                     resi = detected_ligand['resi']
-                        #                     lowest_chain = detected_ligand['chain']
-                                            
-                        #                     # Note: The PDB ligand is already displayed as model 1 (added earlier)
-                        #                     # Now we'll add the aligned analog molecule
-                                            
-                        #                     # Get the selected analog molecule and perform 3D alignment to PDB ligand
-                        #                     selected_info = mols_to_show[selected_idx]
-                        #                     if 'smiles' in selected_info:
-                        #                         try:
-                        #                             # Create the analog molecule with hydrogens
-                        #                             analog_mol = Chem.MolFromSmiles(selected_info['smiles'])
-                        #                             analog_mol_h = Chem.AddHs(analog_mol)
-                                                    
-                        #                             # Generate multiple conformers for the analog molecule
-                        #                             num_conformers = 25
-                        #                             params = rdDistGeom.ETKDGv3()
-                        #                             params.randomSeed = 42
-                        #                             params.numThreads = 0
-                        #                             params.useSmallRingTorsions = True
-                        #                             params.useMacrocycleTorsions = True
-                        #                             cids = rdDistGeom.EmbedMultipleConfs(analog_mol_h, numConfs=num_conformers, params=params)
-                                                    
-                        #                             # Optimize conformers
-                        #                             if len(cids) > 0:
-                        #                                 for cid in cids:
-                        #                                     AllChem.MMFFOptimizeMolecule(analog_mol_h, confId=cid, maxIters=50)
-                                                    
-                        #                             # Find MCS between PDB ligand and analog molecule for alignment
-                        #                             pdb_ligand_noH = Chem.RemoveHs(pdb_ligand_mol)
-                        #                             analog_noH = Chem.RemoveHs(analog_mol_h)
-                                                    
-                        #                             mcs_result = rdFMCS.FindMCS([pdb_ligand_noH, analog_noH],
-                        #                                                         timeout=10,
-                        #                                                         completeRingsOnly=True,
-                        #                                                         bondCompare=rdFMCS.BondCompare.CompareAny,
-                        #                                                         atomCompare=rdFMCS.AtomCompare.CompareAny)
-                                                    
-                        #                             best_rmsd = float('inf')
-                        #                             best_conf = 0
-                                                    
-                        #                             if mcs_result.numAtoms > 0:
-                        #                                 mcs_smarts = mcs_result.smartsString
-                        #                                 mcs_mol = Chem.MolFromSmarts(mcs_smarts)
-                                                        
-                        #                                 if mcs_mol:
-                        #                                     # Get atom mappings for alignment
-                        #                                     match_pdb = pdb_ligand_noH.GetSubstructMatch(mcs_mol)
-                        #                                     match_analog = analog_noH.GetSubstructMatch(mcs_mol)
-                                                            
-                        #                                     if match_pdb and match_analog:
-                        #                                         # Build mapping from heavy atom index to full molecule index
-                        #                                         def get_heavy_to_full_map(mol_with_H):
-                        #                                             heavy_to_full = {}
-                        #                                             heavy_idx = 0
-                        #                                             for atom in mol_with_H.GetAtoms():
-                        #                                                 if atom.GetAtomicNum() != 1:
-                        #                                                     heavy_to_full[heavy_idx] = atom.GetIdx()
-                        #                                                     heavy_idx += 1
-                        #                                             return heavy_to_full
-                                                                
-                        #                                         h2f_pdb = get_heavy_to_full_map(pdb_ligand_mol)
-                        #                                         h2f_analog = get_heavy_to_full_map(analog_mol_h)
-                                                                
-                        #                                         # Create atom map: (analog_idx, pdb_idx) for alignment
-                        #                                         atom_map = []
-                        #                                         for i, (idx_analog, idx_pdb) in enumerate(zip(match_analog, match_pdb)):
-                        #                                             full_idx_analog = h2f_analog.get(idx_analog, idx_analog)
-                        #                                             full_idx_pdb = h2f_pdb.get(idx_pdb, idx_pdb)
-                        #                                             atom_map.append((full_idx_analog, full_idx_pdb))
-                                                                
-                        #                                         # Find best conformer by aligning each to the PDB ligand crystal pose
-                        #                                         # PDB ligand has only one conformer (the crystal structure)
-                        #                                         for cid in cids:
-                        #                                             try:
-                        #                                                 rmsd = AllChem.AlignMol(analog_mol_h, pdb_ligand_mol,
-                        #                                                                        prbCid=cid,
-                        #                                                                        refCid=0,  # PDB ligand has conf 0
-                        #                                                                        atomMap=atom_map)
-                        #                                                 if rmsd < best_rmsd:
-                        #                                                     best_rmsd = rmsd
-                        #                                                     best_conf = cid
-                        #                                             except:
-                        #                                                 continue
-                                                                
-                        #                                         # Final alignment with best conformer
-                        #                                         if best_rmsd < float('inf'):
-                        #                                             AllChem.AlignMol(analog_mol_h, pdb_ligand_mol,
-                        #                                                            prbCid=best_conf,
-                        #                                                            refCid=0,
-                        #                                                            atomMap=atom_map)
-                                                                    
-                        #                                             alignment_info = {
-                        #                                                 'mcs_atoms': mcs_result.numAtoms,
-                        #                                                 'rmsd': best_rmsd,
-                        #                                                 'conformers_sampled': len(cids)
-                        #                                             }
-                                                    
-                        #                             # Get the aligned mol block
-                        #                             aligned_mol_block = Chem.MolToMolBlock(analog_mol_h, confId=best_conf)
-                                                    
-                        #                             # Add aligned molecule to viewer as model 2 (model 0=PDB, model 1=detected ligand)
-                        #                             viewer.addModel(aligned_mol_block, 'sdf')
-                        #                             viewer.setStyle({'model': 2}, {'stick': {
-                        #                                 'radius': 0.25,
-                        #                                 'colorscheme': {
-                        #                                     'prop': 'elem',
-                        #                                     'map': {
-                        #                                         'C': '#e67e22',  # Orange for analog carbons
-                        #                                         'N': '#3050F8',
-                        #                                         'O': '#FF0D0D',
-                        #                                         'S': '#FFFF30',
-                        #                                         'F': '#90E050',
-                        #                                         'Cl': '#1FF01F',
-                        #                                         'Br': '#A62929',
-                        #                                         'I': '#940094',
-                        #                                         'H': '#FFFFFF',
-                        #                                         'P': '#FF8000'
-                        #                                     }
-                        #                                 }
-                        #                             }})
-                                                    
-                        #                         except Exception as e:
-                        #                             # Fallback: just embed without alignment
-                        #                             analog_mol = Chem.MolFromSmiles(selected_info['smiles'])
-                        #                             analog_mol = Chem.AddHs(analog_mol)
-                        #                             AllChem.EmbedMolecule(analog_mol, AllChem.ETKDG())
-                        #                             aligned_mol_block = Chem.MolToMolBlock(analog_mol)
-                        #                             viewer.addModel(aligned_mol_block, 'sdf')
-                        #                             viewer.setStyle({'model': 2}, {'stick': {'radius': 0.25, 'color': '#e67e22'}})
-                        #                             st.warning(f"Could not perform MCS alignment: {str(e)}")
-                                            
-                        #                     viewer.zoomTo({'chain': lowest_chain, 'resn': resn, 'resi': int(resi)})
-                                            
-                        #                     # Display alignment info
-                        #                     if alignment_info:
-                        #                         st.markdown(f"""
-                        #                         <div style="background: #fff3e0; padding: 10px; border-radius: 6px; margin-bottom: 8px;">
-                        #                             <b>🎯 Aligned Mol {selected_idx+1}</b> to PDB ligand <b>{resn}</b> (Chain {lowest_chain}, Residue {resi})<br>
-                        #                             <span style="font-size: 12px;">MCS atoms: {alignment_info['mcs_atoms']} | RMSD: {alignment_info['rmsd']:.3f} Å | Conformers sampled: {alignment_info['conformers_sampled']}</span>
-                        #                         </div>
-                        #                         """, unsafe_allow_html=True)
-                        #                     else:
-                        #                         st.markdown(f"<b>Aligned Mol {selected_idx+1} with ligand in chain {lowest_chain} (resn: {resn}, resi: {resi})</b>", unsafe_allow_html=True)
-                        #                 else:
-                        #                     # Fallback to old method if no detected ligand
-                        #                     import re
-                        #                     ligand_lines = [line for line in pdb_content.split('\n') if line.startswith('HETATM') and not re.search(r'\b(HOH|WAT)\b', line)]
-                        #                     chain_ligands = {}
-                        #                     for line in ligand_lines:
-                        #                         chain = line[21].strip()
-                        #                         if chain:
-                        #                             chain_ligands.setdefault(chain, []).append(line)
-                        #                     if chain_ligands:
-                        #                         lowest_chain = sorted(chain_ligands.keys())[0]
-                        #                         ligand_atoms = chain_ligands[lowest_chain]
-                        #                         resn = ligand_atoms[0][17:20].strip()
-                        #                         resi = ligand_atoms[0][22:26].strip()
-                        #                         viewer.addStyle({'chain': lowest_chain, 'hetflag': True, 'not': {'resn': ['HOH', 'WAT']}}, {'stick': {
-                        #                             'radius': 0.35,
-                        #                             'colorscheme': {
-                        #                                 'prop': 'elem',
-                        #                                 'map': {
-                        #                                     'C': ligand_color,
-                        #                                     'N': '#3050F8',
-                        #                                     'O': '#FF0D0D',
-                        #                                     'S': '#FFFF30',
-                        #                                     'F': '#90E050',
-                        #                                     'Cl': '#1FF01F',
-                        #                                     'Br': '#A62929',
-                        #                                     'I': '#940094',
-                        #                                     'P': '#FF8000'
-                        #                                 }
-                        #                             }
-                        #                         }})
-                        #                         selected_info = mols_to_show[selected_idx]
-                        #                         if 'smiles' in selected_info:
-                        #                             mol = Chem.MolFromSmiles(selected_info['smiles'])
-                        #                             mol = Chem.AddHs(mol)
-                        #                             AllChem.EmbedMolecule(mol, AllChem.ETKDG())
-                        #                             mol_block = Chem.MolToMolBlock(mol)
-                        #                             viewer.addModel(mol_block, 'sdf')
-                        #                             viewer.setStyle({'model': 1}, {'stick': {'radius': 0.25, 'color': '#e67e22'}})
-                        #                         viewer.zoomTo({'chain': lowest_chain, 'resn': resn, 'resi': int(resi)})
-                        #                         st.markdown(f"<b>Aligned Mol {selected_idx+1} with ligand in chain {lowest_chain} (resn: {resn}, resi: {resi})</b>", unsafe_allow_html=True)
-                        #             else:
-                        #                 viewer.zoomTo()
-                        #             viewer_html = viewer._make_html()
-                        #             components.html(viewer_html, height=570, scrolling=False)
-                        #     else:
-                        #         st.info("👆 Upload a PDB file to visualize the protein structure")
-                        
-                        
-                        # Show filtered molecules in an expander
-                        if filtered_info:
-                            with st.expander(f"🚫 Discarded Molecules ({len(filtered_info)} molecules with undesirable substructures)", expanded=False):
-                                st.markdown("*These molecules were filtered out due to containing structural alerts:*")
-                                
-                                # Build HTML grid for filtered molecules
-                                filtered_html_parts = ['<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; padding: 10px;">']
-                                
-                                for idx, filt_info in enumerate(filtered_info):
-                                    filt_mol = filt_info['mol']
-                                    try:
-                                        AllChem.GenerateDepictionMatching2DStructure(filt_mol, ref_mol)
-                                    except:
+                            with pdb_input_col1:
+                                st.markdown("**Option 1: Upload PDB file**")
+                                pdb_file = st.file_uploader("Upload PDB file", type=['pdb'], key='pdb_uploader')
+                            
+                            with pdb_input_col2:
+                                st.markdown("**Option 2: Fetch by PDB ID**")
+                                pdb_id_col, pdb_btn_col = st.columns([2, 1])
+                                with pdb_id_col:
+                                    pdb_id_input = st.text_input("Enter PDB ID (e.g., 1ATP, 6LU7)", key='pdb_id_input', placeholder="1ATP")
+                                with pdb_btn_col:
+                                    st.markdown("<br>", unsafe_allow_html=True)  # Spacing to align button
+                                    fetch_pdb_btn = st.button("🔍 Fetch", key='fetch_pdb_btn')
+                            
+                            # Initialize session state for fetched PDB
+                            if 'fetched_pdb_content' not in st.session_state:
+                                st.session_state.fetched_pdb_content = None
+                            if 'fetched_pdb_id' not in st.session_state:
+                                st.session_state.fetched_pdb_id = None
+                            
+                            # Handle PDB ID fetch
+                            if fetch_pdb_btn and pdb_id_input:
+                                pdb_id_clean = pdb_id_input.strip().upper()
+                                if len(pdb_id_clean) == 4:
+                                    with st.spinner(f"Fetching {pdb_id_clean} from RCSB PDB..."):
                                         try:
-                                            AllChem.Compute2DCoords(filt_mol)
+                                            # Fetch from RCSB PDB
+                                            pdb_url = f"https://files.rcsb.org/download/{pdb_id_clean}.pdb"
+                                            response = requests.get(pdb_url, timeout=30)
+                                            if response.status_code == 200:
+                                                st.session_state.fetched_pdb_content = response.text
+                                                st.session_state.fetched_pdb_id = pdb_id_clean
+                                                st.success(f"✅ Successfully fetched {pdb_id_clean}")
+                                            else:
+                                                st.error(f"❌ Could not fetch PDB ID '{pdb_id_clean}'. Please check the ID and try again.")
+                                                st.session_state.fetched_pdb_content = None
+                                                st.session_state.fetched_pdb_id = None
+                                        except requests.exceptions.Timeout:
+                                            st.error("❌ Request timed out. Please try again.")
+                                        except Exception as e:
+                                            st.error(f"❌ Error fetching PDB: {str(e)}")
+                                else:
+                                    st.warning("⚠️ PDB IDs are 4 characters (e.g., 1ATP, 6LU7)")
+                            
+                            # Determine which PDB content to use (uploaded file takes priority)
+                            pdb_content = None
+                            pdb_source = None
+                            
+                            if pdb_file is not None:
+                                pdb_content = pdb_file.read().decode('utf-8')
+                                pdb_source = pdb_file.name
+                            elif st.session_state.fetched_pdb_content is not None:
+                                pdb_content = st.session_state.fetched_pdb_content
+                                pdb_source = f"PDB: {st.session_state.fetched_pdb_id}"
+                            
+                            if pdb_content is not None:
+                                st.success(f"✅ Loaded: {pdb_source}")
+                                
+                                # Extract ligands from PDB content
+                                # Common residues/ions to exclude (not real ligands)
+                                exclude_residues = {'HOH', 'WAT', 'H2O', 'DOD', 'NA', 'CL', 'K', 'MG', 'CA', 'ZN', 
+                                                   'FE', 'MN', 'CU', 'CO', 'NI', 'CD', 'SO4', 'PO4', 'GOL', 'EDO',
+                                                   'ACE', 'NME', 'NH2', 'ACT', 'DMS', 'BME', 'MPD', 'PEG', 'PGE',
+                                                   'IOD', 'BR', 'F', 'I', 'NO3', 'SCN'}
+                                
+                                # Parse HETATM records to find ligands
+                                ligand_atoms = {}  # {(resname, chain, resnum): [(atom_name, element, x, y, z), ...]}
+                                lines = pdb_content.split('\n')
+                                
+                                for line in lines:
+                                    if line.startswith('HETATM'):
+                                        try:
+                                            atom_name = line[12:16].strip()
+                                            res_name = line[17:20].strip()
+                                            chain_id = line[21]
+                                            res_num = line[22:26].strip()
+                                            x = float(line[30:38].strip())
+                                            y = float(line[38:46].strip())
+                                            z = float(line[46:54].strip())
+                                            element = line[76:78].strip() if len(line) > 76 else atom_name[0]
+                                            
+                                            if res_name.upper() not in exclude_residues:
+                                                key = (res_name, chain_id, res_num)
+                                                if key not in ligand_atoms:
+                                                    ligand_atoms[key] = []
+                                                ligand_atoms[key].append((atom_name, element, x, y, z))
+                                        except (ValueError, IndexError):
+                                            continue
+                                
+                                # Extract CONECT records for connectivity info
+                                conect_records = {}
+                                for line in lines:
+                                    if line.startswith('CONECT'):
+                                        try:
+                                            parts = line.split()
+                                            if len(parts) >= 2:
+                                                atom_serial = int(parts[1])
+                                                bonded = [int(p) for p in parts[2:] if p.strip()]
+                                                if atom_serial not in conect_records:
+                                                    conect_records[atom_serial] = []
+                                                conect_records[atom_serial].extend(bonded)
                                         except:
-                                            pass
+                                            continue
+                                
+                                # Store ligand SDFs in session state
+                                ligand_sdf_data = {}  # {ligand_id: sdf_string}
+                                ligand_mols = {}  # {ligand_id: rdkit_mol}
+                                
+                                if ligand_atoms:
+                                    st.markdown("---")
+                                    st.markdown("**🔬 Ligands detected in structure:**")
                                     
-                                    img = Draw.MolToImage(filt_mol, size=(400, 400))
-                                    img_buffer = io.BytesIO()
-                                    img.save(img_buffer, format='PNG')
-                                    img_b64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+                                    # Process each ligand
+                                    for lig_key, atoms in ligand_atoms.items():
+                                        res_name, chain_id, res_num = lig_key
+                                        ligand_id = f"{res_name}_{chain_id}_{res_num}"
+                                        
+                                        if len(atoms) < 3:  # Skip very small fragments (likely ions)
+                                            continue
+                                        
+                                        # Build PDB block for this ligand
+                                        ligand_pdb_lines = []
+                                        for i, (atom_name, element, x, y, z) in enumerate(atoms, 1):
+                                            # Format as proper PDB HETATM line
+                                            pdb_line = f"HETATM{i:5d} {atom_name:<4s} {res_name:>3s} {chain_id}{int(res_num):4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}"
+                                            ligand_pdb_lines.append(pdb_line)
+                                        ligand_pdb_lines.append("END")
+                                        ligand_pdb_block = '\n'.join(ligand_pdb_lines)
+                                        
+                                        # Try to create RDKit mol from PDB block
+                                        try:
+                                            mol = Chem.MolFromPDBBlock(ligand_pdb_block, removeHs=False, sanitize=False)
+                                            if mol is not None:
+                                                # Determine bond orders from 3D coordinates (PDB has no bond order info)
+                                                try:
+                                                    from rdkit.Chem import rdDetermineBonds
+                                                    rdDetermineBonds.DetermineBonds(mol, charge=0)
+                                                except:
+                                                    # Fallback: try basic sanitization
+                                                    try:
+                                                        Chem.SanitizeMol(mol)
+                                                    except:
+                                                        pass
+                                                
+                                                # Store the 3D coordinates as SDF (with proper bond orders)
+                                                sdf_string = Chem.MolToMolBlock(mol)
+                                                ligand_sdf_data[ligand_id] = sdf_string
+                                                ligand_mols[ligand_id] = mol
+                                        except Exception as e:
+                                            continue
                                     
-                                    filtered_html_parts.append(f'''
-                                    <div style="border: 1px solid #ffcccc; border-radius: 8px; padding: 10px; background: #fff5f5; text-align: center;">
-                                        <img src="data:image/png;base64,{img_b64}" style="width: 100%; max-width: 300px;">
-                                        <div style="margin-top: 8px;">
-                                            <b style="color: #cc0000;">⚠️ {filt_info['filter_reason']}</b><br>
-                                            <div style="font-size: 9px; word-break: break-all; margin-top: 5px;">
-                                                <b>SMILES:</b> {filt_info['smiles']}
-                                            </div>
-                                        </div>
+                                    # Display ligand 2D structures
+                                    if ligand_mols:
+                                        # Store SDF data in session state for potential future use
+                                        st.session_state.ligand_sdf_data = ligand_sdf_data
+                                        
+                                        # Create columns for ligand display (max 4 per row)
+                                        ligand_items = list(ligand_mols.items())
+                                        cols_per_row = min(4, len(ligand_items))
+                                        
+                                        # Build HTML for ligand cards - horizontal scrollable
+                                        ligand_cards_html = ['<div style="display: flex; overflow-x: auto; gap: 15px; padding: 10px; background: #f0f8ff; border-radius: 8px;">']
+                                        
+                                        for lig_id, mol in ligand_items:
+                                            try:
+                                                # Generate 2D coordinates for display (remove hydrogens for cleaner view)
+                                                mol_2d = Chem.RemoveHs(Chem.Mol(mol))
+                                                AllChem.Compute2DCoords(mol_2d)
+                                                
+                                                # Generate image
+                                                img = Draw.MolToImage(mol_2d, size=(300, 300))
+                                                img_buffer = io.BytesIO()
+                                                img.save(img_buffer, format='PNG')
+                                                img_b64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+                                                
+                                                # Get SMILES if possible
+                                                try:
+                                                    smiles = Chem.MolToSmiles(mol)
+                                                except:
+                                                    smiles = "N/A"
+                                                
+                                                # Parse ligand ID
+                                                parts = lig_id.split('_')
+                                                res_name = parts[0] if len(parts) > 0 else lig_id
+                                                chain = parts[1] if len(parts) > 1 else ""
+                                                
+                                                ligand_cards_html.append(f'''
+                                                <div style="flex: 0 0 auto; width: 220px; border: 2px solid #4a90d9; border-radius: 8px; padding: 10px; background: white; text-align: center;">
+                                                    <img src="data:image/png;base64,{img_b64}" style="width: 180px; height: 180px; object-fit: contain;">
+                                                    <div style="margin-top: 5px; font-weight: bold; color: #4a90d9;">{res_name}</div>
+                                                    <div style="font-size: 10px; color: #666;">Chain {chain} | {mol.GetNumAtoms()} atoms</div>
+                                                    <div style="font-size: 9px; color: #999; word-break: break-all; max-height: 25px; overflow: hidden;">{smiles[:40]}{'...' if len(smiles) > 40 else ''}</div>
+                                                </div>
+                                                ''')
+                                            except Exception as e:
+                                                continue
+                                        
+                                        ligand_cards_html.append('</div>')
+                                        
+                                        if len(ligand_cards_html) > 2:  # Has content beyond wrapper divs
+                                            components.html(''.join(ligand_cards_html), height=290, scrolling=True)
+                                            
+                                            # Show expander with SDF data for download
+                                            with st.expander("📥 Download Ligand 3D Coordinates (SDF)", expanded=False):
+                                                for lig_id, sdf_string in ligand_sdf_data.items():
+                                                    st.markdown(f"**{lig_id}**")
+                                                    st.download_button(
+                                                        label=f"Download {lig_id}.sdf",
+                                                        data=sdf_string,
+                                                        file_name=f"{lig_id}.sdf",
+                                                        mime="chemical/x-mdl-sdfile",
+                                                        key=f"download_sdf_{lig_id}"
+                                                    )
+                                        else:
+                                            st.info("No ligand structures could be extracted from the PDB.")
+                                    else:
+                                        st.info("No ligands detected (only protein/nucleic acid and common solvents/ions).")
+                                
+                                # Display generated molecules in horizontal scrollable drawer
+                                st.markdown("---")
+                                st.markdown("**🧪 Generated Analog Molecules:**")
+                                
+                                # Build HTML for generated molecule cards - horizontal scrollable
+                                gen_mol_cards_html = ['<div style="display: flex; overflow-x: auto; gap: 15px; padding: 10px; background: #f9f9f9; border-radius: 8px;">']
+                                
+                                for idx, info in enumerate(filtered_reassembled_info):
+                                    gen_mol = info['mol']
+                                    gen_smiles = info['smiles']
+                                    mol_id = f"ID {idx + 1}"
+                                    sim_score = info.get('mol_similarity', None)
+                                    
+                                    # Generate 2D image
+                                    try:
+                                        AllChem.Compute2DCoords(gen_mol)
+                                        gen_img = Draw.MolToImage(gen_mol, size=(300, 300))
+                                        gen_img_buffer = io.BytesIO()
+                                        gen_img.save(gen_img_buffer, format='PNG')
+                                        gen_img_b64 = base64.b64encode(gen_img_buffer.getvalue()).decode('utf-8')
+                                    except:
+                                        gen_img_b64 = ""
+                                    
+                                    sim_text = f"Sim: {sim_score:.3f}" if sim_score else ""
+                                    
+                                    gen_mol_cards_html.append(f'''
+                                    <div style="flex: 0 0 auto; width: 260px; border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: white; text-align: center;">
+                                        <img src="data:image/png;base64,{gen_img_b64}" style="width: 240px; height: 240px; object-fit: contain;">
+                                        <div style="margin-top: 5px; font-weight: bold; font-size: 12px;">{mol_id}</div>
+                                        <div style="font-size: 10px; color: #27ae60; font-weight: bold;">{sim_text}</div>
+                                        <div style="font-size: 9px; color: #666; word-break: break-all; max-height: 30px; overflow: hidden;">{gen_smiles[:30]}...</div>
                                     </div>
                                     ''')
                                 
-                                filtered_html_parts.append('</div>')
-                                filtered_html = ''.join(filtered_html_parts)
-                                components.html(filtered_html, height=600, scrolling=True)
+                                gen_mol_cards_html.append('</div>')
+                                components.html(''.join(gen_mol_cards_html), height=350, scrolling=True)
+                                
+                                # Alignment section - select molecule to align with PDB ligand
+                                if ligand_mols:
+                                    st.markdown("**🔗 Align Generated Molecule to PDB Ligand:**")
+                                    
+                                    # Initialize session state for alignment
+                                    if 'aligned_mol_sdf' not in st.session_state:
+                                        st.session_state.aligned_mol_sdf = None
+                                    if 'alignment_info' not in st.session_state:
+                                        st.session_state.alignment_info = None
+                                    
+                                    align_col1, align_col2, align_col3 = st.columns([2, 2, 1])
+                                    
+                                    with align_col1:
+                                        # Select generated molecule
+                                        mol_options = [f"ID {idx + 1}" for idx in range(len(filtered_reassembled_info))]
+                                        selected_align_mol = st.selectbox(
+                                            "Select molecule to align:",
+                                            options=mol_options,
+                                            key="align_mol_selector"
+                                        )
+                                    
+                                    with align_col2:
+                                        # Select target ligand
+                                        ligand_options = list(ligand_mols.keys())
+                                        selected_ligand = st.selectbox(
+                                            "Align to ligand:",
+                                            options=ligand_options,
+                                            key="align_ligand_selector"
+                                        )
+                                    
+                                    with align_col3:
+                                        st.markdown("<br>", unsafe_allow_html=True)
+                                        align_btn = st.button("🔗 Align", key="align_mol_btn", type="primary")
+                                    
+                                    if align_btn and selected_align_mol and selected_ligand:
+                                        selected_idx = int(selected_align_mol.split(" ")[1]) - 1
+                                        selected_info = filtered_reassembled_info[selected_idx]
+                                        query_smiles = selected_info['smiles']
+                                        ref_mol = ligand_mols[selected_ligand]
+                                        
+                                        with st.spinner("Computing alignment..."):
+                                            try:
+                                                # Generate 3D conformers for the query molecule
+                                                query_mol = Chem.AddHs(Chem.MolFromSmiles(query_smiles))
+                                                
+                                                # Generate multiple conformers
+                                                params = rdDistGeom.ETKDGv3()
+                                                params.randomSeed = 42
+                                                params.numThreads = 0
+                                                params.useSmallRingTorsions = True
+                                                params.useMacrocycleTorsions = True
+                                                num_confs = 50
+                                                
+                                                cids = rdDistGeom.EmbedMultipleConfs(query_mol, numConfs=num_confs, params=params)
+                                                
+                                                if len(cids) > 0:
+                                                    # Optimize conformers
+                                                    AllChem.MMFFOptimizeMoleculeConfs(query_mol, numThreads=0)
+                                                    
+                                                    # Reference molecule (PDB ligand with crystal coords)
+                                                    ref_mol_h = Chem.AddHs(ref_mol, addCoords=True)
+                                                    
+                                                    # Find MCS for alignment
+                                                    mcs_result = rdFMCS.FindMCS(
+                                                        [ref_mol_h, query_mol],
+                                                        bondCompare=rdFMCS.BondCompare.CompareAny,
+                                                        atomCompare=rdFMCS.AtomCompare.CompareAny,
+                                                        ringMatchesRingOnly=True,
+                                                        completeRingsOnly=True,
+                                                        timeout=10
+                                                    )
+                                                    
+                                                    best_rmsd = float('inf')
+                                                    best_conf_id = 0
+                                                    
+                                                    if mcs_result.numAtoms > 0:
+                                                        mcs_mol = Chem.MolFromSmarts(mcs_result.smartsString)
+                                                        
+                                                        # Get atom mapping for reference
+                                                        ref_match = ref_mol_h.GetSubstructMatch(mcs_mol)
+                                                        
+                                                        if ref_match:
+                                                            # Try each conformer
+                                                            for conf_id in cids:
+                                                                query_match = query_mol.GetSubstructMatch(mcs_mol)
+                                                                if query_match:
+                                                                    # Create atom map
+                                                                    atom_map = list(zip(query_match, ref_match))
+                                                                    
+                                                                    # Align and get RMSD
+                                                                    rmsd = AllChem.AlignMol(query_mol, ref_mol_h, 
+                                                                                           prbCid=conf_id, refCid=0,
+                                                                                           atomMap=atom_map)
+                                                                    
+                                                                    if rmsd < best_rmsd:
+                                                                        best_rmsd = rmsd
+                                                                        best_conf_id = conf_id
+                                                            
+                                                            # Final alignment with best conformer
+                                                            query_match = query_mol.GetSubstructMatch(mcs_mol)
+                                                            if query_match:
+                                                                atom_map = list(zip(query_match, ref_match))
+                                                                AllChem.AlignMol(query_mol, ref_mol_h, 
+                                                                               prbCid=best_conf_id, refCid=0,
+                                                                               atomMap=atom_map)
+                                                    
+                                                    # Get the aligned molecule as SDF (remove Hs for cleaner display)
+                                                    aligned_mol_no_h = Chem.RemoveHs(query_mol)
+                                                    aligned_sdf = Chem.MolToMolBlock(aligned_mol_no_h, confId=best_conf_id)
+                                                    
+                                                    # Store in session state
+                                                    st.session_state.aligned_mol_sdf = aligned_sdf
+                                                    st.session_state.alignment_info = {
+                                                        'mol_id': selected_align_mol,
+                                                        'ligand_id': selected_ligand,
+                                                        'rmsd': best_rmsd,
+                                                        'mcs_atoms': mcs_result.numAtoms if mcs_result else 0,
+                                                        'num_confs': len(cids)
+                                                    }
+                                                    st.success(f"✅ Aligned {selected_align_mol} to {selected_ligand} (RMSD: {best_rmsd:.3f} Å, MCS: {mcs_result.numAtoms} atoms)")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("Could not generate 3D conformers for the selected molecule.")
+                                            except Exception as e:
+                                                st.error(f"Alignment error: {str(e)}")
+                                    
+                                    # Show alignment info if available
+                                    if st.session_state.alignment_info:
+                                        info = st.session_state.alignment_info
+                                        st.info(f"🔗 **Current alignment:** {info['mol_id']} → {info['ligand_id']} | RMSD: {info['rmsd']:.3f} Å | MCS atoms: {info['mcs_atoms']} | Conformers sampled: {info['num_confs']}")
+                                        
+                                        if st.button("🗑️ Clear alignment", key="clear_alignment"):
+                                            st.session_state.aligned_mol_sdf = None
+                                            st.session_state.alignment_info = None
+                                            st.rerun()
+                                
+                                st.markdown("---")
+                                
+                                # Viewer options
+                                bg_color = st.color_picker("Background", "#ffffff", key='pdb_bg')
+                                
+                                # Escape PDB content for JavaScript - encode as base64 to avoid escaping issues
+                                pdb_b64 = base64.b64encode(pdb_content.encode('utf-8')).decode('utf-8')
+                                
+                                # Check if we have an aligned molecule to display
+                                aligned_sdf_b64 = ""
+                                if st.session_state.get('aligned_mol_sdf'):
+                                    aligned_sdf_b64 = base64.b64encode(st.session_state.aligned_mol_sdf.encode('utf-8')).decode('utf-8')
+                                
+                                # Create Mol* viewer using the molstar viewer HTML embedding
+                                # If aligned molecule exists, load it as additional structure
+                                if aligned_sdf_b64:
+                                    viewer_html = f"""
+                                    <!DOCTYPE html>
+                                    <html>
+                                    <head>
+                                        <link rel="stylesheet" type="text/css" href="https://www.ebi.ac.uk/pdbe/pdb-component-library/css/pdbe-molstar-3.1.3.css">
+                                        <script type="text/javascript" src="https://www.ebi.ac.uk/pdbe/pdb-component-library/js/pdbe-molstar-plugin-3.1.3.js"></script>
+                                        <style>
+                                            body {{ margin: 0; padding: 0; }}
+                                            #molstar-viewer {{
+                                                width: 100%;
+                                                height: 550px;
+                                                position: relative;
+                                                border-radius: 8px;
+                                                overflow: hidden;
+                                            }}
+                                        </style>
+                                    </head>
+                                    <body>
+                                        <div id="molstar-viewer"></div>
+                                        <script>
+                                            // Initialize PDBE Molstar viewer
+                                            var viewerInstance = new PDBeMolstarPlugin();
+                                            
+                                            var options = {{
+                                                customData: {{
+                                                    url: 'data:text/plain;base64,{pdb_b64}',
+                                                    format: 'pdb'
+                                                }},
+                                                alphafoldView: false,
+                                                bgColor: {{r: {int(bg_color[1:3], 16)}, g: {int(bg_color[3:5], 16)}, b: {int(bg_color[5:7], 16)}}},
+                                                hideControls: false,
+                                                hideCanvasControls: ['selection', 'animation', 'expand'],
+                                                sequencePanel: true,
+                                                landscape: true,
+                                                reactive: true
+                                            }};
+                                            
+                                            var viewerContainer = document.getElementById('molstar-viewer');
+                                            viewerInstance.render(viewerContainer, options);
+                                            
+                                            // Apply default visualization and load aligned molecule after structure loads
+                                            viewerInstance.events.loadComplete.subscribe(function() {{
+                                                viewerInstance.visual.update({{
+                                                    polymer: {{
+                                                        type: 'cartoon',
+                                                        colorScheme: 'chain-id'
+                                                    }},
+                                                    het: {{
+                                                        type: 'ball-and-stick',
+                                                        colorScheme: 'element-symbol'
+                                                    }},
+                                                    water: false
+                                                }});
+                                                
+                                                // Load the aligned molecule as additional structure
+                                                viewerInstance.load({{
+                                                    url: 'data:text/plain;base64,{aligned_sdf_b64}',
+                                                    format: 'sdf',
+                                                    isBinary: false
+                                                }}, false);  // false = don't reset camera
+                                            }});
+                                        </script>
+                                    </body>
+                                    </html>
+                                    """
+                                else:
+                                    viewer_html = f"""
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <link rel="stylesheet" type="text/css" href="https://www.ebi.ac.uk/pdbe/pdb-component-library/css/pdbe-molstar-3.1.3.css">
+                                    <script type="text/javascript" src="https://www.ebi.ac.uk/pdbe/pdb-component-library/js/pdbe-molstar-plugin-3.1.3.js"></script>
+                                    <style>
+                                        body {{ margin: 0; padding: 0; }}
+                                        #molstar-viewer {{
+                                            width: 100%;
+                                            height: 550px;
+                                            position: relative;
+                                            border-radius: 8px;
+                                            overflow: hidden;
+                                        }}
+                                    </style>
+                                </head>
+                                <body>
+                                    <div id="molstar-viewer"></div>
+                                    <script>
+                                        // Initialize PDBE Molstar viewer
+                                        var viewerInstance = new PDBeMolstarPlugin();
+                                        
+                                        var options = {{
+                                            customData: {{
+                                                url: 'data:text/plain;base64,{pdb_b64}',
+                                                format: 'pdb'
+                                            }},
+                                            alphafoldView: false,
+                                            bgColor: {{r: {int(bg_color[1:3], 16)}, g: {int(bg_color[3:5], 16)}, b: {int(bg_color[5:7], 16)}}},
+                                            hideControls: false,
+                                            hideCanvasControls: ['selection', 'animation', 'expand'],
+                                            sequencePanel: true,
+                                            landscape: true,
+                                            reactive: true
+                                        }};
+                                        
+                                        var viewerContainer = document.getElementById('molstar-viewer');
+                                        viewerInstance.render(viewerContainer, options);
+                                        
+                                        // Apply default visualization after structure loads
+                                        viewerInstance.events.loadComplete.subscribe(function() {{
+                                            viewerInstance.visual.update({{
+                                                polymer: {{
+                                                    type: 'cartoon',
+                                                    colorScheme: 'chain-id'
+                                                }},
+                                                het: {{
+                                                    type: 'ball-and-stick',
+                                                    colorScheme: 'element-symbol'
+                                                }},
+                                                water: false
+                                            }});
+                                        }});
+                                    </script>
+                                </body>
+                                </html>
+                                """
+                                components.html(viewer_html, height=570, scrolling=False)
+                                
+                                # Show some basic PDB info
+                                lines = pdb_content.split('\n')
+                                atom_count = sum(1 for line in lines if line.startswith('ATOM') or line.startswith('HETATM'))
+                                hetatm_count = sum(1 for line in lines if line.startswith('HETATM'))
+                                chain_ids = set(line[21] for line in lines if (line.startswith('ATOM') or line.startswith('HETATM')) and len(line) > 21)
+                                
+                                # Try to extract title
+                                title_lines = [line[10:].strip() for line in lines if line.startswith('TITLE')]
+                                title = ' '.join(title_lines) if title_lines else 'N/A'
+                                
+                                st.markdown(f"""
+                                **Structure Info:**
+                                - **Title:** {title[:100]}{'...' if len(title) > 100 else ''}
+                                - **Atoms:** {atom_count:,} (including {hetatm_count:,} heteroatoms)
+                                - **Chains:** {', '.join(sorted(chain_ids)) if chain_ids else 'N/A'}
+                                """)
+                                
+                                st.caption("💡 **Tip:** Use mouse to rotate (left-click), zoom (scroll), and pan (right-click). The control panel on the right offers additional visualization options.")
+                                
+                                # Button to clear fetched PDB
+                                if st.session_state.fetched_pdb_content is not None:
+                                    if st.button("🗑️ Clear fetched PDB", key='clear_fetched_pdb'):
+                                        st.session_state.fetched_pdb_content = None
+                                        st.session_state.fetched_pdb_id = None
+                                        st.rerun()
+                        
                     else:
                         st.warning("Could not reassemble any molecules with the replacement fragments. This many be due to problematic substructure/s in the input molecule or the fragment to be replaced is too small.")
 
@@ -2878,6 +2934,45 @@ with st.expander("⚠️ Undesirable Substructure Patterns (Structural Alerts)",
     pattern_html = ''.join(pattern_html_parts)
     
     components.html(pattern_html, height=800, scrolling=True)
+
+# ============================================================================
+# DISCARDED MOLECULES (STRUCTURAL ALERTS) AT BOTTOM
+# ============================================================================
+if 'discarded_molecules' in st.session_state and st.session_state.discarded_molecules:
+    filtered_info = st.session_state.discarded_molecules
+    with st.expander(f"🚫 Discarded Molecules ({len(filtered_info)} molecules with undesirable substructures)", expanded=False):
+        st.markdown("*These molecules were filtered out due to containing structural alerts:*")
+        
+        # Build HTML grid for filtered molecules
+        filtered_html_parts = ['<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; padding: 10px;">']
+        
+        for idx, filt_info in enumerate(filtered_info):
+            filt_mol = filt_info['mol']
+            try:
+                AllChem.Compute2DCoords(filt_mol)
+            except:
+                pass
+            
+            img = Draw.MolToImage(filt_mol, size=(400, 400))
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='PNG')
+            img_b64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+            
+            filtered_html_parts.append(f'''
+            <div style="border: 1px solid #ffcccc; border-radius: 8px; padding: 10px; background: #fff5f5; text-align: center;">
+                <img src="data:image/png;base64,{img_b64}" style="width: 100%; max-width: 300px;">
+                <div style="margin-top: 8px;">
+                    <b style="color: #cc0000;">⚠️ {filt_info['filter_reason']}</b><br>
+                    <div style="font-size: 9px; word-break: break-all; margin-top: 5px;">
+                        <b>SMILES:</b> {filt_info['smiles']}
+                    </div>
+                </div>
+            </div>
+            ''')
+        
+        filtered_html_parts.append('</div>')
+        filtered_html = ''.join(filtered_html_parts)
+        components.html(filtered_html, height=600, scrolling=True)
 
 # Footer
 # st.markdown("---")
