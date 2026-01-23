@@ -419,7 +419,8 @@ def initialize_synplanner(
 
 def render_svg_with_labels(pred, columns, box_colors, smiles_to_id=None):
     """
-    Renders an SVG representation of a retrosynthetic route with building block ID labels.
+    Renders an SVG representation of a retrosynthetic route with building block ID labels
+    and intermediate labels.
     """
     if not CGRTOOLS_AVAILABLE:
         return None
@@ -432,6 +433,8 @@ def render_svg_with_labels(pred, columns, box_colors, smiles_to_id=None):
     cy = count()
     arrow_points = {}
     label_positions = []  # Store label positions for building blocks
+    intermediate_positions = []  # Store label positions for intermediates
+    intermediate_counter = count(1)  # Counter for intermediate numbering
     
     for ms in columns:
         heights = []
@@ -474,6 +477,13 @@ def render_svg_with_labels(pred, columns, box_colors, smiles_to_id=None):
                     label_x = (min_x + max_x) / 2
                     label_y = min_y + 0.3  # Position below the box
                     label_positions.append((label_x, label_y, bb_id))
+            
+            # Store position for intermediate labels (status "mulecule" means intermediate)
+            elif m.meta.get("status") == "mulecule":
+                label_x = (min_x + max_x) / 2
+                label_y = min_y + 0.3  # Position below the box
+                int_num = next(intermediate_counter)
+                intermediate_positions.append((label_x, label_y, f"Int-{int_num}"))
             
             arrow_points[next(cy)].append(y_shift - h / 2.0)
             y_shift -= h + 3.0
@@ -543,6 +553,14 @@ def render_svg_with_labels(pred, columns, box_colors, smiles_to_id=None):
             f'<text x="{label_x:.2f}" y="{label_y:.2f}" '
             f'text-anchor="middle" font-size="0.35" font-family="sans-serif" '
             f'fill="#006400" font-weight="bold">{bb_id}</text>'
+        )
+    
+    # Add intermediate labels
+    for label_x, label_y, int_label in intermediate_positions:
+        svg.append(
+            f'<text x="{label_x:.2f}" y="{label_y:.2f}" '
+            f'text-anchor="middle" font-size="0.35" font-family="sans-serif" '
+            f'fill="#e65100" font-weight="bold">{int_label}</text>'
         )
     
     svg.append("</svg>")
@@ -740,6 +758,42 @@ def plan_synthesis(
                     'score': route_data['score'],
                     'num_steps': route_data['depth'],
                 }
+                
+                # Extract building blocks and intermediates from the route
+                try:
+                    nodes = tree.route_to_node(node_id)
+                    building_blocks_list = []
+                    intermediates_list = []
+                    seen_smiles = set()  # Avoid duplicates
+                    
+                    # Get target SMILES to exclude it from intermediates
+                    target_smiles = str(nodes[0].curr_precursor.molecule) if nodes else None
+                    
+                    for node in nodes:
+                        for precursor in node.new_precursors:
+                            mol_smiles = str(precursor.molecule)
+                            if mol_smiles in seen_smiles:
+                                continue
+                            seen_smiles.add(mol_smiles)
+                            
+                            if precursor.is_building_block(tree.building_blocks):
+                                bb_id = get_building_block_id(mol_smiles)
+                                building_blocks_list.append({
+                                    'smiles': mol_smiles,
+                                    'id': bb_id
+                                })
+                            else:
+                                # It's an intermediate (not a building block and not the target)
+                                if mol_smiles != target_smiles:
+                                    intermediates_list.append({
+                                        'smiles': mol_smiles
+                                    })
+                    
+                    route_info['building_blocks'] = building_blocks_list
+                    route_info['intermediates'] = intermediates_list
+                except Exception as e:
+                    route_info['building_blocks'] = []
+                    route_info['intermediates'] = []
                 
                 if return_svg:
                     try:

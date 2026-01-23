@@ -2141,23 +2141,97 @@ if smiles_input:
                                                         {route['svg']}
                                                     </div>
                                                     '''
-                                                    components.html(svg_html, height=450, scrolling=True)
+                                                    components.html(svg_html, height=350, scrolling=True)
                                                     
                                                     # Display building block IDs if available
                                                     building_blocks = route.get('building_blocks', [])
+                                                    intermediates = route.get('intermediates', [])
+                                                    
                                                     if building_blocks:
                                                         bb_with_ids = [bb for bb in building_blocks if bb.get('id')]
                                                         if bb_with_ids:
-                                                            st.markdown("**🧱 Building Blocks:**")
-                                                            bb_info_html = '<div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;">'
-                                                            for bb in bb_with_ids:
-                                                                bb_info_html += f'''
-                                                                <div style="background: #e8f5e9; border: 1px solid #4caf50; border-radius: 4px; padding: 5px 10px; font-size: 12px;">
-                                                                    <b style="color: #2e7d32;">{bb['id']}</b>: <code style="font-size: 15px;">{bb['smiles'][:30]}{"..." if len(bb['smiles']) > 30 else ""}</code>
+                                                            st.markdown("**🧱 Building Blocks:** *(click 📋 to copy SMILES)*")
+                                                            
+                                                            # Build HTML with copy buttons using JavaScript
+                                                            bb_cards = []
+                                                            for idx, bb in enumerate(bb_with_ids):
+                                                                smiles_escaped = bb['smiles'].replace("'", "\\'").replace('"', '&quot;')
+                                                                smiles_display = bb['smiles'][:30] + ("..." if len(bb['smiles']) > 30 else "")
+                                                                bb_cards.append(f'''
+                                                                <div style="background: #e8f5e9; border: 1px solid #4caf50; border-radius: 4px; padding: 8px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+                                                                    <div style="flex-grow: 1;">
+                                                                        <b style="color: #2e7d32;">{bb['id']}</b>: <code style="font-size: 13px;">{smiles_display}</code>
+                                                                    </div>
+                                                                    <button onclick="copyToClipboard_{i}_{idx}()" 
+                                                                            style="background: #4caf50; color: white; border: none; border-radius: 3px; padding: 4px 8px; cursor: pointer; font-size: 14px;"
+                                                                            title="Copy SMILES: {smiles_escaped}"
+                                                                            id="copy_btn_{i}_{idx}">
+                                                                        📋
+                                                                    </button>
                                                                 </div>
-                                                                '''
-                                                            bb_info_html += '</div>'
-                                                            st.markdown(bb_info_html, unsafe_allow_html=True)
+                                                                <script>
+                                                                function copyToClipboard_{i}_{idx}() {{
+                                                                    navigator.clipboard.writeText('{smiles_escaped}').then(function() {{
+                                                                        var btn = document.getElementById('copy_btn_{i}_{idx}');
+                                                                        btn.innerHTML = '✓';
+                                                                        btn.style.background = '#2e7d32';
+                                                                        setTimeout(function() {{
+                                                                            btn.innerHTML = '📋';
+                                                                            btn.style.background = '#4caf50';
+                                                                        }}, 1500);
+                                                                    }});
+                                                                }}
+                                                                </script>
+                                                                ''')
+                                                            
+                                                            bb_html = f'''
+                                                            <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;">
+                                                                {''.join(bb_cards)}
+                                                            </div>
+                                                            '''
+                                                            components.html(bb_html, height=max(60, 50 * ((len(bb_with_ids) + 2) // 3)), scrolling=False)
+                                                    
+                                                    if intermediates:
+                                                        st.markdown("**🔬 Intermediates:** *(click 📋 to copy SMILES)*")
+                                                        
+                                                        # Build HTML with copy buttons for intermediates
+                                                        int_cards = []
+                                                        for idx, inter in enumerate(intermediates):
+                                                            smiles_escaped = inter['smiles'].replace("'", "\\'").replace('"', '&quot;')
+                                                            smiles_display = inter['smiles'][:35] + ("..." if len(inter['smiles']) > 35 else "")
+                                                            int_cards.append(f'''
+                                                            <div style="background: #fff3e0; border: 1px solid #ff9800; border-radius: 4px; padding: 8px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px;">
+                                                                <div style="flex-grow: 1;">
+                                                                    <b style="color: #e65100;">Int-{idx + 1}</b>: <code style="font-size: 13px;">{smiles_display}</code>
+                                                                </div>
+                                                                <button onclick="copyIntermediate_{i}_{idx}()" 
+                                                                        style="background: #ff9800; color: white; border: none; border-radius: 3px; padding: 4px 8px; cursor: pointer; font-size: 14px;"
+                                                                        title="Copy SMILES: {smiles_escaped}"
+                                                                        id="copy_int_btn_{i}_{idx}">
+                                                                    📋
+                                                                </button>
+                                                            </div>
+                                                            <script>
+                                                            function copyIntermediate_{i}_{idx}() {{
+                                                                navigator.clipboard.writeText('{smiles_escaped}').then(function() {{
+                                                                    var btn = document.getElementById('copy_int_btn_{i}_{idx}');
+                                                                    btn.innerHTML = '✓';
+                                                                    btn.style.background = '#e65100';
+                                                                    setTimeout(function() {{
+                                                                        btn.innerHTML = '📋';
+                                                                        btn.style.background = '#ff9800';
+                                                                    }}, 1500);
+                                                                }});
+                                                            }}
+                                                            </script>
+                                                            ''')
+                                                        
+                                                        int_html = f'''
+                                                        <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;">
+                                                            {''.join(int_cards)}
+                                                        </div>
+                                                        '''
+                                                        components.html(int_html, height=max(60, 50 * ((len(intermediates) + 2) // 3)), scrolling=False)
                                                 else:
                                                     st.warning("SVG visualization not available for this route")
                                                     if route.get('svg_error'):
