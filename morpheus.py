@@ -98,7 +98,10 @@ UNDESIRABLE_PATTERNS = [
     # Rhodanine-ish (PAINS)
     ('O=C1NC(=O)C=C1', 'Rhodanine-like (PAINS)'),
     ('O=C1NC(=S)SC1', 'Rhodanine'),
-    ('O=C1NC(=O)SC1', 'Thiazolidinedione')
+    ('O=C1NC(=O)SC1', 'Thiazolidinedione'),
+    #Problematic ring systems
+    ("O=C1OCC([*:1])=C1[*:3]", 'Butenolide'),
+    ("c1(/C=C/c2ccccc2)ccccc1", '1,2-Diphenylethylene (Stilbene)')
 ]
 
 # ============================================================================
@@ -1095,6 +1098,7 @@ if smiles_input:
             
             if input_has_undesirable:
                 st.warning(f"⚠️ **Warning:** Input molecule contains undesirable substructure(s): {', '.join(set(input_undesirable_patterns))}")
+                #st.warning(f"⚠️ **Warning:** Input molecule contains undesirable substructure(s)")
         
         with col2:
             # Generate 3D structure

@@ -2,16 +2,16 @@
 
 **A bioisostere and R-group replacement tool for hit to lead and lead optimisation**
 
-Morpheus is an interactive web application for molecular decomposition, fragment replacement, and retrosynthetic analysis. 
+Morpheus helps medicinal & computational chemists explore chemical space and thus create focused libraries around a hit or a lead molecule, by replacing a chosen scaffold or R-group fragment from the molecule with bioisosteres and evaluating the generated analogs.
 
-It helps medicinal & computational chemists explore chemical space and thus create focused libraries around a hit or a lead molecule, by replacing a chosen scaffold or R-group fragment from the molecule with bioisosteres and evaluating the generated analogs.
+It offers an interactive web application to perform retrosynthetic analyses and visualise interations of generated molecules with the target protein's binding pocket.
 
 ## Features
 
 ### 🧩 Molecule Decomposition
 - Input molecules via SMILES string or draw using the built-in Ketcher editor
 - Automatically decomposes molecules into ring and non-ring fragments
-- Visualize all fragments and select one for replacement
+- Visualize the scaffold and R-groups and select one of them for replacement
 
 ### 🔄 Bioisostere Replacement
 - Once selected, search for similar fragments from a curated database of ChEMBL-derived fragments
@@ -100,19 +100,17 @@ It helps medicinal & computational chemists explore chemical space and thus crea
    gunzip data/*.gz
    ```
 
-## Running the App
-
-1. **Activate your environment:**
+7. **Activate your environment:**
    ```bash
    conda activate morpheus
    ```
 
-2. **Run Streamlit:**
+8. **Run Streamlit:**
    ```bash
    streamlit run morpheus.py
    ```
 
-3. **Open in browser:**
+10. **Open in browser:**
    The app will automatically open at `http://localhost:8501`
 
 ## Data Files
