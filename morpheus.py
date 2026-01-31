@@ -2672,9 +2672,39 @@ if smiles_input:
                                                                                prbCid=best_conf_id, refCid=0,
                                                                                atomMap=atom_map)
                                                     
-                                                    # Get the aligned molecule as SDF (remove Hs for cleaner display)
-                                                    aligned_mol_no_h = Chem.RemoveHs(query_mol)
-                                                    aligned_sdf = Chem.MolToMolBlock(aligned_mol_no_h, confId=best_conf_id)
+                                                    # Get the aligned molecule as MOL block (single conformer only)
+                                                    # IMPORTANT: We must create a completely new molecule with only ONE conformer
+                                                    # because RemoveHs preserves all conformers from the original molecule
+                                                    
+                                                    # Step 1: Get the best aligned conformer's coordinates from the H-removed version
+                                                    mol_no_h = Chem.RemoveHs(query_mol)
+                                                    
+                                                    # Step 2: Create a completely fresh molecule from SMILES (no conformers)
+                                                    fresh_mol = Chem.MolFromSmiles(query_smiles)
+                                                    
+                                                    if fresh_mol and mol_no_h.GetNumConformers() > 0:
+                                                        # Step 3: Find the conformer with the best_conf_id
+                                                        # Note: After RemoveHs, conformer IDs are preserved
+                                                        try:
+                                                            source_conf = mol_no_h.GetConformer(best_conf_id)
+                                                        except:
+                                                            # If ID not found, get the first available conformer
+                                                            source_conf = mol_no_h.GetConformer(0)
+                                                        
+                                                        # Step 4: Create a single new conformer and copy coordinates
+                                                        new_conf = Chem.Conformer(fresh_mol.GetNumAtoms())
+                                                        for i in range(fresh_mol.GetNumAtoms()):
+                                                            pos = source_conf.GetAtomPosition(i)
+                                                            new_conf.SetAtomPosition(i, pos)
+                                                        
+                                                        # Step 5: Add this single conformer to the fresh molecule
+                                                        fresh_mol.AddConformer(new_conf, assignId=True)
+                                                        
+                                                        # Step 6: Generate MOL block from the fresh molecule (only 1 conformer)
+                                                        aligned_sdf = Chem.MolToMolBlock(fresh_mol, confId=0)
+                                                    else:
+                                                        # Fallback: just use the first conformer
+                                                        aligned_sdf = Chem.MolToMolBlock(mol_no_h, confId=0)
                                                     
                                                     # Store in session state
                                                     st.session_state.aligned_mol_sdf = aligned_sdf
@@ -2758,26 +2788,41 @@ if smiles_input:
                                             var viewerContainer = document.getElementById('molstar-viewer');
                                             viewerInstance.render(viewerContainer, options);
                                             
+                                            // Flag to track if aligned molecule has been loaded
+                                            var alignedMolLoaded = false;
+                                            
                                             // Apply default visualization and load aligned molecule after structure loads
                                             viewerInstance.events.loadComplete.subscribe(function() {{
+                                                // Set orthographic camera
+                                                try {{
+                                                    viewerInstance.plugin.canvas3d.setProps({{ 
+                                                        camera: {{ mode: 'orthographic' }} 
+                                                    }});
+                                                }} catch(e) {{
+                                                    console.log('Could not set orthographic camera:', e);
+                                                }}
+                                                
+                                                // Update visualization
                                                 viewerInstance.visual.update({{
                                                     polymer: {{
                                                         type: 'cartoon',
                                                         colorScheme: 'chain-id'
                                                     }},
                                                     het: {{
-                                                        type: 'ball-and-stick',
-                                                        colorScheme: 'element-symbol'
+                                                        type: 'ball-and-stick'
                                                     }},
                                                     water: false
                                                 }});
                                                 
-                                                // Load the aligned molecule as additional structure
-                                                viewerInstance.load({{
-                                                    url: 'data:text/plain;base64,{aligned_sdf_b64}',
-                                                    format: 'sdf',
-                                                    isBinary: false
-                                                }}, false);  // false = don't reset camera
+                                                // Load the aligned molecule ONLY ONCE
+                                                if (!alignedMolLoaded) {{
+                                                    alignedMolLoaded = true;
+                                                    viewerInstance.load({{
+                                                        url: 'data:text/plain;base64,{aligned_sdf_b64}',
+                                                        format: 'mol',
+                                                        isBinary: false
+                                                    }}, false);  // false = don't reset camera
+                                                }}
                                             }});
                                         </script>
                                     </body>
@@ -2826,14 +2871,23 @@ if smiles_input:
                                         
                                         // Apply default visualization after structure loads
                                         viewerInstance.events.loadComplete.subscribe(function() {{
+                                            // Set orthographic camera
+                                            try {{
+                                                viewerInstance.plugin.canvas3d.setProps({{ 
+                                                    camera: {{ mode: 'orthographic' }} 
+                                                }});
+                                            }} catch(e) {{
+                                                console.log('Could not set orthographic camera:', e);
+                                            }}
+                                            
+                                            // Update visualization
                                             viewerInstance.visual.update({{
                                                 polymer: {{
                                                     type: 'cartoon',
                                                     colorScheme: 'chain-id'
                                                 }},
                                                 het: {{
-                                                    type: 'ball-and-stick',
-                                                    colorScheme: 'element-symbol'
+                                                    type: 'ball-and-stick'
                                                 }},
                                                 water: false
                                             }});

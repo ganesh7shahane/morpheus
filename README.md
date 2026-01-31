@@ -1,4 +1,4 @@
-# 💧 Morpheus
+# 💧 Morpheus: MedChem Optimization through Rational Pharmacophore Hopping & Exchange Using Substituents
 
 **A bioisostere and R-group replacement tool for hit to lead and lead optimisation**
 
