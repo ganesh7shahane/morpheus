@@ -1,0 +1,52 @@
+
+Tier                    mta3      mta4      mta5   pre-dedup     final   removed
+--------------------------------------------------------------------------------
+VeryCommon               346       322       305         360       360         0
+Common                   645       618       574         699       683        16
+LessCommon             1,910     1,904     1,854       2,126     2,059        67
+Rare                   4,071     4,082     4,000       4,687     4,536       151
+VeryRare               9,126     9,446     9,439      11,035    10,599       436
+ExtremelyRare          9,186     9,620     9,785      11,955    11,092       863
+UltraRare             12,604    13,282    13,649      16,716    15,392     1,324
+Doubletons            16,896    18,117    18,732      23,031    21,287     1,744
+Singletons           101,748   119,661   134,830     151,333   148,104     3,229
+--------------------------------------------------------------------------------
+TOTAL                                                          214,112
+
+Note: The "removed" column shows fragments that appeared in a 
+higher-priority tier from a different mta run and were kept there 
+rather than duplicated in a lower tier. 
+For example, a fragment that is VeryCommon in mta=3 but only 
+Common in mta=4 is kept solely in VeryCommon.
+
+#####################################################
+
+Chembl downlaod v1: when pchembl and minimum assay confidences were removed
+=======================================================
+Fragment library written by frequency tier for mta=3:
+=======================================================
+Tier                    Count  File
+-------------------------------------------------------
+VeryCommon                346  VeryCommon.txt.gz
+Common                    645  Common.txt.gz
+LessCommon               1910  LessCommon.txt.gz
+Rare                     4071  Rare.txt.gz
+VeryRare                 9126  VeryRare.txt.gz
+ExtremelyRare            9186  ExtremelyRare.txt.gz
+UltraRare               12604  UltraRare.txt.gz
+Doubletons              16896  Doubletons.txt.gz
+Singletons             101748  Singletons.txt.gz
+-------------------------------------------------------
+#####################################################
+
+This is when the libraries was produced for the first time using pchembl=>6.0 and minimum assay confidence of 8
+Tier	Count   Frequency_range
+VeryCommon.txt.gz	325 ≥725
+Common.txt.gz	750 215–724
+LessCommon.txt.gz	1,863	65–214
+Rare.txt.gz	3,633	25–64
+VeryRare.txt.gz	8,164	9–24
+ExtremelyRare.txt.gz	8,067	5–8
+UltraRare.txt.gz	11,111	3–4
+Doubletons.txt.gz	14,431	
+Singletons.txt.gz	68,875
